@@ -574,3 +574,169 @@ func TestConvertOpenAIRequestToAntigravityPreservesToolResponseAsString(t *testi
 		t.Fatalf("expected %q, got %q", expected, got)
 	}
 }
+
+func TestConvertOpenAIRequestToAntigravityImageGenerationTool(t *testing.T) {
+	t.Run("tools with image_generation sets responseModalities without function declarations", func(t *testing.T) {
+		inputJSON := []byte(`{
+			"model": "gemini-3-flash",
+			"messages": [{"role": "user", "content": "Draw a sunset"}],
+			"tools": [{"type": "image_generation"}]
+		}`)
+		out := ConvertOpenAIRequestToAntigravity("gemini-3-flash", inputJSON, false)
+
+		mods := gjson.GetBytes(out, "request.generationConfig.responseModalities").Array()
+		if len(mods) != 2 {
+			t.Fatalf("responseModalities length = %d, want 2. Output: %s", len(mods), out)
+		}
+		if mods[0].String() != "IMAGE" || mods[1].String() != "TEXT" {
+			t.Fatalf("responseModalities = %v, want [IMAGE, TEXT]. Output: %s", mods, out)
+		}
+		if gjson.GetBytes(out, "request.tools").Exists() {
+			t.Fatalf("request.tools should not be present when only image_generation is provided. Output: %s", out)
+		}
+		if gjson.GetBytes(out, "request.toolConfig").Exists() {
+			t.Fatalf("request.toolConfig should not be present. Output: %s", out)
+		}
+	})
+
+	t.Run("tools with image_generation and aspect_ratio", func(t *testing.T) {
+		inputJSON := []byte(`{
+			"model": "gemini-3-flash",
+			"messages": [{"role": "user", "content": "Draw a landscape"}],
+			"tools": [{"type": "image_generation", "aspect_ratio": "16:9"}]
+		}`)
+		out := ConvertOpenAIRequestToAntigravity("gemini-3-flash", inputJSON, false)
+
+		if got := gjson.GetBytes(out, "request.generationConfig.imageConfig.aspectRatio").String(); got != "16:9" {
+			t.Fatalf("aspectRatio = %q, want 16:9. Output: %s", got, out)
+		}
+		mods := gjson.GetBytes(out, "request.generationConfig.responseModalities").Array()
+		if len(mods) != 2 || mods[0].String() != "IMAGE" || mods[1].String() != "TEXT" {
+			t.Fatalf("responseModalities = %v, want [IMAGE, TEXT]. Output: %s", mods, out)
+		}
+	})
+
+	t.Run("tools with size mapping", func(t *testing.T) {
+		tests := []struct {
+			size   string
+			wantAR string
+		}{
+			{"1024x1024", "1:1"},
+			{"1792x1024", "16:9"},
+			{"1024x1792", "9:16"},
+			{"1024x768", "4:3"},
+			{"768x1024", "3:4"},
+			{"1536x1024", "3:2"},
+			{"1024x1536", "2:3"},
+		}
+		for _, tc := range tests {
+			t.Run(tc.size, func(t *testing.T) {
+				inputJSON := []byte(`{"messages":[{"role":"user","content":"Draw an image"}],"tools":[{"type":"image_generation","size":"` + tc.size + `"}]}`)
+				out := ConvertOpenAIRequestToAntigravity("gemini-3-flash", inputJSON, false)
+				if got := gjson.GetBytes(out, "request.generationConfig.imageConfig.aspectRatio").String(); got != tc.wantAR {
+					t.Fatalf("aspectRatio for size %q = %q, want %q. Output: %s", tc.size, got, tc.wantAR, out)
+				}
+			})
+		}
+	})
+
+	t.Run("tool_choice with type image_generation", func(t *testing.T) {
+		inputJSON := []byte(`{
+			"model": "gemini-3-flash",
+			"messages": [{"role": "user", "content": "Draw an image"}],
+			"tool_choice": {"type": "image_generation", "aspect_ratio": "4:3"}
+		}`)
+		out := ConvertOpenAIRequestToAntigravity("gemini-3-flash", inputJSON, false)
+
+		if got := gjson.GetBytes(out, "request.generationConfig.imageConfig.aspectRatio").String(); got != "4:3" {
+			t.Fatalf("aspectRatio = %q, want 4:3. Output: %s", got, out)
+		}
+		mods := gjson.GetBytes(out, "request.generationConfig.responseModalities").Array()
+		if len(mods) != 2 || mods[0].String() != "IMAGE" || mods[1].String() != "TEXT" {
+			t.Fatalf("responseModalities = %v, want [IMAGE, TEXT]. Output: %s", mods, out)
+		}
+		if gjson.GetBytes(out, "request.toolConfig").Exists() {
+			t.Fatalf("toolConfig should not be set for image_generation tool_choice. Output: %s", out)
+		}
+	})
+
+	t.Run("tool_choice string image_generation", func(t *testing.T) {
+		inputJSON := []byte(`{
+			"model": "gemini-3-flash",
+			"messages": [{"role": "user", "content": "Draw an image"}],
+			"tool_choice": "image_generation"
+		}`)
+		out := ConvertOpenAIRequestToAntigravity("gemini-3-flash", inputJSON, false)
+
+		mods := gjson.GetBytes(out, "request.generationConfig.responseModalities").Array()
+		if len(mods) != 2 || mods[0].String() != "IMAGE" || mods[1].String() != "TEXT" {
+			t.Fatalf("responseModalities = %v, want [IMAGE, TEXT]. Output: %s", mods, out)
+		}
+		if gjson.GetBytes(out, "request.toolConfig").Exists() {
+			t.Fatalf("toolConfig should not be set for string image_generation tool_choice. Output: %s", out)
+		}
+	})
+
+	t.Run("preserves existing modalities when image_generation is detected", func(t *testing.T) {
+		inputJSON := []byte(`{
+			"model": "gemini-3-flash",
+			"messages": [{"role": "user", "content": "Draw an image"}],
+			"modalities": ["TEXT"],
+			"tools": [{"type": "image_generation"}]
+		}`)
+		out := ConvertOpenAIRequestToAntigravity("gemini-3-flash", inputJSON, false)
+
+		mods := gjson.GetBytes(out, "request.generationConfig.responseModalities").Array()
+		if len(mods) != 2 {
+			t.Fatalf("responseModalities length = %d, want 2. Output: %s", len(mods), out)
+		}
+		if mods[0].String() != "TEXT" || mods[1].String() != "IMAGE" {
+			t.Fatalf("responseModalities = %v, want [TEXT, IMAGE]. Output: %s", mods, out)
+		}
+	})
+
+	t.Run("tools with both function and image_generation does not declare image_generation as function", func(t *testing.T) {
+		inputJSON := []byte(`{
+			"model": "gemini-3-flash",
+			"messages": [{"role": "user", "content": "Search and draw"}],
+			"tools": [
+				{
+					"type": "function",
+					"function": {
+						"name": "search_web",
+						"description": "Search web",
+						"parameters": {"type": "object", "properties": {"query": {"type": "string"}}}
+					}
+				},
+				{
+					"type": "image_generation",
+					"aspect_ratio": "16:9"
+				}
+			],
+			"tool_choice": {"type": "image_generation"}
+		}`)
+		out := ConvertOpenAIRequestToAntigravity("gemini-3-flash", inputJSON, false)
+
+		if got := gjson.GetBytes(out, "request.generationConfig.imageConfig.aspectRatio").String(); got != "16:9" {
+			t.Fatalf("aspectRatio = %q, want 16:9. Output: %s", got, out)
+		}
+		mods := gjson.GetBytes(out, "request.generationConfig.responseModalities").Array()
+		if len(mods) != 2 || mods[0].String() != "IMAGE" || mods[1].String() != "TEXT" {
+			t.Fatalf("responseModalities = %v, want [IMAGE, TEXT]. Output: %s", mods, out)
+		}
+
+		// Function declarations should only contain search_web
+		fnDecls := gjson.GetBytes(out, "request.tools.0.functionDeclarations").Array()
+		if len(fnDecls) != 1 {
+			t.Fatalf("functionDeclarations length = %d, want 1. Output: %s", len(fnDecls), out)
+		}
+		if got := fnDecls[0].Get("name").String(); got != "search_web" {
+			t.Fatalf("functionDeclarations[0].name = %q, want search_web. Output: %s", got, out)
+		}
+
+		// tool_choice was image_generation, so request.toolConfig should NOT be set
+		if gjson.GetBytes(out, "request.toolConfig").Exists() {
+			t.Fatalf("request.toolConfig should not be set when tool_choice is image_generation. Output: %s", out)
+		}
+	})
+}
