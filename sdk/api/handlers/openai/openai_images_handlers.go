@@ -2290,6 +2290,10 @@ func buildImagesAPIResponse(results []imageCallResult, createdAt int64, usageRaw
 		if img.RevisedPrompt != "" {
 			_ = itemDoc.Set("revised_prompt", img.RevisedPrompt)
 		}
+		if img.OutputFormat != "" {
+			_ = itemDoc.Set("output_format", img.OutputFormat)
+			_ = itemDoc.Set("mime_type", mimeTypeFromOutputFormat(img.OutputFormat))
+		}
 		_ = outDoc.SetRawBytes("data.-1", itemDoc.Bytes())
 	}
 
