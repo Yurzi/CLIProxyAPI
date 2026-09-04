@@ -84,14 +84,12 @@ func ConvertOpenAIRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 
 	// Map OpenAI modalities -> Gemini generationConfig.responseModalities
 	// e.g. "modalities": ["image", "text"] -> ["IMAGE", "TEXT"]
+	var responseMods []string
 	if mods := gjson.GetBytes(rawJSON, "modalities"); mods.Exists() && mods.IsArray() {
-		var responseMods []string
 		for _, m := range mods.Array() {
-			switch strings.ToLower(m.String()) {
-			case "text":
-				responseMods = append(responseMods, "TEXT")
-			case "image":
-				responseMods = append(responseMods, "IMAGE")
+			val := strings.ToUpper(strings.TrimSpace(m.String()))
+			if val != "" {
+				responseMods = append(responseMods, val)
 			}
 		}
 		if len(responseMods) > 0 {
@@ -108,6 +106,101 @@ func ConvertOpenAIRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 		if size := imgCfg.Get("image_size"); size.Exists() && size.Type == gjson.String {
 			out, _ = sjson.SetBytes(out, "generationConfig.imageConfig.imageSize", size.Str)
 		}
+	}
+
+	// Support image_generation tool / tool_choice
+	hasImageGen := false
+	applyImageGenTool := func(t gjson.Result) {
+		hasImageGen = true
+		ar := t.Get("aspect_ratio").String()
+		if ar == "" {
+			ar = t.Get("aspectRatio").String()
+		}
+		if ar == "" {
+			ar = t.Get("image_generation.aspect_ratio").String()
+		}
+		if ar == "" {
+			ar = t.Get("image_generation.aspectRatio").String()
+		}
+		if ar == "" {
+			ar = t.Get("image_config.aspect_ratio").String()
+		}
+		if ar == "" {
+			ar = t.Get("image_config.aspectRatio").String()
+		}
+		if ar != "" {
+			out, _ = sjson.SetBytes(out, "generationConfig.imageConfig.aspectRatio", ar)
+		} else {
+			size := t.Get("size").String()
+			if size == "" {
+				size = t.Get("image_generation.size").String()
+			}
+			if size == "" {
+				size = t.Get("image_generation.image_size").String()
+			}
+			if size == "" {
+				size = t.Get("image_generation.imageSize").String()
+			}
+			if size == "" {
+				size = t.Get("image_config.size").String()
+			}
+			if size == "" {
+				size = t.Get("image_config.image_size").String()
+			}
+			if size == "" {
+				size = t.Get("image_config.imageSize").String()
+			}
+			if size != "" {
+				if mapped := geminiChatAspectRatioFromSize(size); mapped != "" {
+					out, _ = sjson.SetBytes(out, "generationConfig.imageConfig.aspectRatio", mapped)
+				}
+			}
+		}
+	}
+
+	if tools := gjson.GetBytes(rawJSON, "tools"); tools.Exists() && tools.IsArray() {
+		for _, t := range tools.Array() {
+			if strings.EqualFold(t.Get("type").String(), "image_generation") {
+				applyImageGenTool(t)
+			}
+		}
+	}
+	if tc := gjson.GetBytes(rawJSON, "tool_choice"); tc.Exists() {
+		if tc.Type == gjson.String && strings.EqualFold(tc.String(), "image_generation") {
+			hasImageGen = true
+		} else if tc.IsObject() && strings.EqualFold(tc.Get("type").String(), "image_generation") {
+			applyImageGenTool(tc)
+		}
+	}
+
+	if hasImageGen {
+		if len(responseMods) == 0 {
+			if existing := gjson.GetBytes(out, "generationConfig.responseModalities"); existing.Exists() && existing.IsArray() {
+				for _, m := range existing.Array() {
+					val := strings.ToUpper(strings.TrimSpace(m.String()))
+					if val != "" {
+						responseMods = append(responseMods, val)
+					}
+				}
+			}
+		}
+		hasImage := false
+		hasText := false
+		for _, m := range responseMods {
+			if strings.EqualFold(m, "IMAGE") {
+				hasImage = true
+			}
+			if strings.EqualFold(m, "TEXT") {
+				hasText = true
+			}
+		}
+		if !hasImage {
+			responseMods = append(responseMods, "IMAGE")
+		}
+		if !hasText {
+			responseMods = append(responseMods, "TEXT")
+		}
+		out, _ = sjson.SetBytes(out, "generationConfig.responseModalities", responseMods)
 	}
 
 	// messages -> systemInstruction + contents
@@ -421,9 +514,79 @@ func ConvertOpenAIRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 		}
 	}
 
+	out = applyOpenAIToolChoiceToGemini(out, rawJSON)
 	out = common.AttachDefaultSafetySettings(out, "safetySettings")
 
 	return out
+}
+
+func applyOpenAIToolChoiceToGemini(out, rawJSON []byte) []byte {
+	toolChoice := gjson.GetBytes(rawJSON, "tool_choice")
+	if !toolChoice.Exists() {
+		return out
+	}
+	if toolChoice.Type == gjson.String && strings.EqualFold(toolChoice.String(), "image_generation") {
+		return out
+	}
+	if toolChoice.IsObject() && strings.EqualFold(toolChoice.Get("type").String(), "image_generation") {
+		return out
+	}
+
+	mode := ""
+	allowedName := ""
+	if toolChoice.Type == gjson.String {
+		switch strings.ToLower(strings.TrimSpace(toolChoice.String())) {
+		case "none":
+			mode = "NONE"
+		case "auto":
+			mode = "AUTO"
+		case "required", "any":
+			mode = "ANY"
+		}
+	} else if toolChoice.IsObject() && strings.EqualFold(toolChoice.Get("type").String(), "function") {
+		mode = "ANY"
+		allowedName = toolChoice.Get("function.name").String()
+		if allowedName == "" {
+			allowedName = toolChoice.Get("name").String()
+		}
+	}
+	if mode == "" {
+		return out
+	}
+
+	out, _ = sjson.SetBytes(out, "toolConfig.functionCallingConfig.mode", mode)
+	if strings.TrimSpace(allowedName) != "" {
+		out, _ = sjson.SetBytes(out, "toolConfig.functionCallingConfig.allowedFunctionNames", []string{util.SanitizeFunctionName(allowedName)})
+	}
+	return out
+}
+
+func geminiChatAspectRatioFromSize(size string) string {
+	switch strings.ToLower(strings.TrimSpace(size)) {
+	case "1024x1024", "2048x2048", "512x512", "1:1":
+		return "1:1"
+	case "1792x1024", "1280x720", "16:9":
+		return "16:9"
+	case "1024x1792", "720x1280", "9:16":
+		return "9:16"
+	case "1024x768", "4:3":
+		return "4:3"
+	case "768x1024", "3:4":
+		return "3:4"
+	case "1536x1024", "3:2":
+		return "3:2"
+	case "1024x1536", "2:3":
+		return "2:3"
+	default:
+		trimmed := strings.TrimSpace(size)
+		if strings.Contains(trimmed, ":") {
+			return trimmed
+		}
+		if trimmed != "" {
+			return "1:1"
+		}
+		return ""
+	}
 }
 
 func geminiTextPart(text string) []byte {
