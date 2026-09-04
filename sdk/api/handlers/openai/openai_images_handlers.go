@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -12,6 +13,7 @@ import (
 	"net/textproto"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -32,6 +34,7 @@ const (
 	defaultXAIImagesModel       = "grok-imagine-image"
 	xaiImagesQualityModel       = "grok-imagine-image-quality"
 	xaiImages20Model            = "grok-imagine-image-2.0"
+	geminiFlashImageModel       = "gemini-3.1-flash-image"
 	xaiImagesHandlerType        = "openai-image"
 	xaiImagesDefaultAspectRatio = "1:1"
 	xaiImagesDefaultResolution  = "1k"
@@ -230,11 +233,26 @@ func isXAIImagesModel(model string) bool {
 	return prefix == "" || prefix == "xai" || prefix == "x-ai" || prefix == "grok"
 }
 
+func isGeminiChatImageModel(model string) bool {
+	baseModel := imagesModelBase(model)
+	if baseModel == "" {
+		return false
+	}
+	if strings.Contains(baseModel, "flash-image") || strings.Contains(baseModel, "imagen") {
+		return true
+	}
+	info := registry.LookupModelInfo(strings.TrimSpace(model))
+	if info == nil {
+		info = registry.LookupModelInfo(baseModel)
+	}
+	return info != nil && info.Type == registry.OpenAIImageModelType
+}
+
 func isSupportedImagesModel(model string) bool {
 	if isCodexImagesToolModel(model) {
 		return true
 	}
-	return isXAIImagesModel(model) || isOpenAICompatImagesModel(model)
+	return isXAIImagesModel(model) || isGeminiChatImageModel(model) || isOpenAICompatImagesModel(model)
 }
 
 func isCodexImagesToolModel(model string) bool {
@@ -258,7 +276,7 @@ func rejectUnsupportedImagesModel(c *gin.Context, model string) bool {
 
 	c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
 		Error: handlers.ErrorDetail{
-			Message: fmt.Sprintf("Model %s is not supported on %s or %s. Use %s, %s, %s, %s, %s, or a configured openai-compatibility image model.", model, imagesGenerationsPath, imagesEditsPath, gptImage15Model, defaultImagesToolModel, defaultXAIImagesModel, xaiImagesQualityModel, xaiImages20Model),
+			Message: fmt.Sprintf("Model %s is not supported on %s or %s. Use %s, %s, %s, %s, %s, %s, or a configured openai-compatibility image model.", model, imagesGenerationsPath, imagesEditsPath, gptImage15Model, defaultImagesToolModel, defaultXAIImagesModel, xaiImagesQualityModel, xaiImages20Model, geminiFlashImageModel),
 			Type:    "invalid_request_error",
 		},
 	})
@@ -436,6 +454,127 @@ func xaiImagesEditOptionsFromJSON(rawJSON []byte) (aspectRatio string, resolutio
 		n = v.Int()
 	}
 	return aspectRatio, resolution, n
+}
+
+func geminiImageAspectRatioFromSize(size string) string {
+	size = strings.ToLower(strings.TrimSpace(size))
+	if size == "" {
+		return ""
+	}
+	switch size {
+	case "1024x1024":
+		return "1:1"
+	case "1792x1024", "1536x1024", "1280x720":
+		return "16:9"
+	case "1024x1792", "1024x1536", "720x1280":
+		return "9:16"
+	case "1024x768":
+		return "4:3"
+	case "768x1024":
+		return "3:4"
+	default:
+		return "1:1"
+	}
+}
+
+func buildGeminiChatImagesRequest(prompt, model, size string) []byte {
+	req := []byte(`{}`)
+	req, _ = sjson.SetBytes(req, "model", strings.TrimSpace(model))
+	messages := []map[string]any{
+		{
+			"role":    "user",
+			"content": strings.TrimSpace(prompt),
+		},
+	}
+	req, _ = sjson.SetBytes(req, "messages", messages)
+	req, _ = sjson.SetBytes(req, "modalities", []string{"image", "text"})
+	if ar := geminiImageAspectRatioFromSize(size); ar != "" {
+		req, _ = sjson.SetBytes(req, "image_config.aspect_ratio", ar)
+	}
+	return req
+}
+
+func buildGeminiChatImagesEditRequest(prompt, model, size string, images []string) []byte {
+	contentParts := make([]map[string]any, 0, len(images)+1)
+	for _, img := range images {
+		img = strings.TrimSpace(img)
+		if img == "" {
+			continue
+		}
+		contentParts = append(contentParts, map[string]any{
+			"type": "image_url",
+			"image_url": map[string]any{
+				"url": img,
+			},
+		})
+	}
+	contentParts = append(contentParts, map[string]any{
+		"type": "text",
+		"text": strings.TrimSpace(prompt),
+	})
+
+	req := []byte(`{}`)
+	req, _ = sjson.SetBytes(req, "model", strings.TrimSpace(model))
+	messages := []map[string]any{
+		{
+			"role":    "user",
+			"content": contentParts,
+		},
+	}
+	req, _ = sjson.SetBytes(req, "messages", messages)
+	req, _ = sjson.SetBytes(req, "modalities", []string{"image", "text"})
+	if ar := geminiImageAspectRatioFromSize(size); ar != "" {
+		req, _ = sjson.SetBytes(req, "image_config.aspect_ratio", ar)
+	}
+	return req
+}
+
+func extractImagesFromChatCompletions(resp []byte) ([]imageCallResult, int64, error) {
+	createdAt := gjson.GetBytes(resp, "created").Int()
+	imagesResult := gjson.GetBytes(resp, "choices.0.message.images")
+	if !imagesResult.Exists() || !imagesResult.IsArray() || len(imagesResult.Array()) == 0 {
+		return nil, 0, errors.New("no images returned in chat completions response")
+	}
+
+	var results []imageCallResult
+	for _, item := range imagesResult.Array() {
+		rawURL := strings.TrimSpace(item.Get("image_url.url").String())
+		if rawURL == "" {
+			rawURL = strings.TrimSpace(item.Get("url").String())
+		}
+		if rawURL == "" {
+			continue
+		}
+
+		var b64Data string
+		var format string
+		if idx := strings.Index(rawURL, ";base64,"); idx >= 0 {
+			meta := rawURL[:idx]
+			b64Data = rawURL[idx+len(";base64,"):]
+			mimeType := strings.TrimPrefix(meta, "data:")
+			if semi := strings.Index(mimeType, ";"); semi >= 0 {
+				mimeType = mimeType[:semi]
+			}
+			mimeType = strings.TrimSpace(mimeType)
+			format = strings.TrimPrefix(mimeType, "image/")
+			if format == "" {
+				format = mimeType
+			}
+		} else {
+			b64Data = rawURL
+		}
+
+		results = append(results, imageCallResult{
+			Result:       b64Data,
+			OutputFormat: format,
+		})
+	}
+
+	if len(results) == 0 {
+		return nil, createdAt, errors.New("no valid images found in chat completions response")
+	}
+
+	return results, createdAt, nil
 }
 
 func mimeTypeFromOutputFormat(outputFormat string) string {
@@ -662,6 +801,16 @@ func (h *OpenAIAPIHandler) ImagesGenerations(c *gin.Context) {
 		h.handleOpenAICompatImages(c, compatReq, imageModel, responseFormat, "image_generation", stream)
 		return
 	}
+	if isGeminiChatImageModel(imageModel) {
+		n := int(gjson.GetBytes(rawJSON, "n").Int())
+		if n <= 0 {
+			n = 1
+		}
+		size := strings.TrimSpace(gjson.GetBytes(rawJSON, "size").String())
+		chatReq := buildGeminiChatImagesRequest(prompt, imageModel, size)
+		h.collectGeminiChatImages(c, chatReq, imageModel, responseFormat, n)
+		return
+	}
 
 	tool := []byte(`{"type":"image_generation","action":"generate"}`)
 	tool, _ = sjson.SetBytes(tool, "model", imageModel)
@@ -831,6 +980,16 @@ func (h *OpenAIAPIHandler) imagesEditsFromMultipart(c *gin.Context) {
 		h.handleOpenAICompatImages(c, compatReq, imageModel, responseFormat, "image_edit", stream)
 		return
 	}
+	if isGeminiChatImageModel(imageModel) {
+		size := c.PostForm("size")
+		n := parseIntField(c.PostForm("n"), 1)
+		if n <= 0 {
+			n = 1
+		}
+		chatReq := buildGeminiChatImagesEditRequest(prompt, imageModel, size, images)
+		h.collectGeminiChatImages(c, chatReq, imageModel, responseFormat, int(n))
+		return
+	}
 
 	var maskDataURL *string
 	if maskFiles := form.File["mask"]; len(maskFiles) > 0 && maskFiles[0] != nil {
@@ -958,6 +1117,26 @@ func (h *OpenAIAPIHandler) imagesEditsFromJSON(c *gin.Context) {
 	if isOpenAICompatImagesModel(imageModel) {
 		compatReq := buildOpenAICompatImagesJSONRequest(rawJSON, imageModel, stream)
 		h.handleOpenAICompatImages(c, compatReq, imageModel, responseFormat, "image_edit", stream)
+		return
+	}
+	if isGeminiChatImageModel(imageModel) {
+		images := collectXAIImagesFromJSON(rawJSON)
+		if len(images) == 0 {
+			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
+				Error: handlers.ErrorDetail{
+					Message: "Invalid request: image is required",
+					Type:    "invalid_request_error",
+				},
+			})
+			return
+		}
+		size := strings.TrimSpace(gjson.GetBytes(rawJSON, "size").String())
+		n := int(gjson.GetBytes(rawJSON, "n").Int())
+		if n <= 0 {
+			n = 1
+		}
+		chatReq := buildGeminiChatImagesEditRequest(prompt, imageModel, size, images)
+		h.collectGeminiChatImages(c, chatReq, imageModel, responseFormat, n)
 		return
 	}
 
@@ -1435,6 +1614,135 @@ func (h *OpenAIAPIHandler) streamOpenAICompatImages(c *gin.Context, compatReq []
 			streamStarted = true
 		}
 	}
+}
+
+func (h *OpenAIAPIHandler) collectGeminiChatImages(c *gin.Context, chatReq []byte, model, responseFormat string, n int) {
+	c.Header("Content-Type", "application/json")
+
+	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
+	defer stopKeepAlive()
+
+	model = strings.TrimSpace(model)
+	var allResults []imageCallResult
+	var lastCreatedAt int64
+	var upstreamHeaders http.Header
+
+	if n <= 1 {
+		resp, headers, errMsg := h.ExecuteWithAuthManager(cliCtx, "openai", model, chatReq, "")
+		stopKeepAlive()
+		if errMsg != nil {
+			h.WriteErrorResponse(c, errMsg)
+			if errMsg.Error != nil {
+				cliCancel(errMsg.Error)
+			} else {
+				cliCancel(nil)
+			}
+			return
+		}
+		upstreamHeaders = headers
+		results, createdAt, err := extractImagesFromChatCompletions(resp)
+		if err != nil {
+			errMsg := &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: err}
+			h.WriteErrorResponse(c, errMsg)
+			cliCancel(err)
+			return
+		}
+		allResults = results
+		lastCreatedAt = createdAt
+	} else {
+		count := n
+		maxConcurrent := 4
+		if count < maxConcurrent {
+			maxConcurrent = count
+		}
+		sem := make(chan struct{}, maxConcurrent)
+		var wg sync.WaitGroup
+		type callResult struct {
+			resp    []byte
+			headers http.Header
+			errMsg  *interfaces.ErrorMessage
+		}
+		callResults := make([]callResult, count)
+
+		for i := 0; i < count; i++ {
+			wg.Add(1)
+			go func(idx int) {
+				defer wg.Done()
+				select {
+				case <-cliCtx.Done():
+					return
+				case sem <- struct{}{}:
+				}
+				defer func() { <-sem }()
+
+				if cliCtx.Err() != nil {
+					return
+				}
+				resp, headers, errMsg := h.ExecuteWithAuthManager(cliCtx, "openai", model, chatReq, "")
+				callResults[idx] = callResult{
+					resp:    resp,
+					headers: headers,
+					errMsg:  errMsg,
+				}
+			}(i)
+		}
+		wg.Wait()
+		stopKeepAlive()
+
+		if cliCtx.Err() != nil {
+			cliCancel(cliCtx.Err())
+			return
+		}
+
+		for _, cr := range callResults {
+			if cr.errMsg != nil {
+				h.WriteErrorResponse(c, cr.errMsg)
+				if cr.errMsg.Error != nil {
+					cliCancel(cr.errMsg.Error)
+				} else {
+					cliCancel(nil)
+				}
+				return
+			}
+			if cr.headers != nil && upstreamHeaders == nil {
+				upstreamHeaders = cr.headers
+			}
+			results, createdAt, err := extractImagesFromChatCompletions(cr.resp)
+			if err != nil {
+				errMsg := &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: err}
+				h.WriteErrorResponse(c, errMsg)
+				cliCancel(err)
+				return
+			}
+			allResults = append(allResults, results...)
+			if createdAt > 0 {
+				lastCreatedAt = createdAt
+			}
+		}
+	}
+
+	if len(allResults) == 0 {
+		err := errors.New("no images returned")
+		h.WriteErrorResponse(c, &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: err})
+		cliCancel(err)
+		return
+	}
+	if lastCreatedAt == 0 {
+		lastCreatedAt = time.Now().Unix()
+	}
+
+	out, err := buildImagesAPIResponse(allResults, lastCreatedAt, nil, allResults[0], responseFormat)
+	if err != nil {
+		errMsg := &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: err}
+		h.WriteErrorResponse(c, errMsg)
+		cliCancel(err)
+		return
+	}
+
+	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
+	_, _ = c.Writer.Write(out)
+	cliCancel(nil)
 }
 
 func (h *OpenAIAPIHandler) collectXAIImages(c *gin.Context, xaiReq []byte, responseFormat string) {
