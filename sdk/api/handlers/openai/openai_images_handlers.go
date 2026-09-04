@@ -2055,10 +2055,12 @@ func buildImagesAPIResponse(results []imageCallResult, createdAt int64, usageRaw
 		if img.RevisedPrompt != "" {
 			item, _ = sjson.SetBytes(item, "revised_prompt", img.RevisedPrompt)
 		}
-		if img.OutputFormat != "" {
-			item, _ = sjson.SetBytes(item, "output_format", img.OutputFormat)
-			item, _ = sjson.SetBytes(item, "mime_type", mimeTypeFromOutputFormat(img.OutputFormat))
+		outputFmt := img.OutputFormat
+		if outputFmt == "" {
+			outputFmt = "png"
 		}
+		item, _ = sjson.SetBytes(item, "output_format", outputFmt)
+		item, _ = sjson.SetBytes(item, "mime_type", mimeTypeFromOutputFormat(outputFmt))
 		out, _ = sjson.SetRawBytes(out, "data.-1", item)
 	}
 
