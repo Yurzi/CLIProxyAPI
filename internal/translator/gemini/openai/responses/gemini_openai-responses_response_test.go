@@ -1535,3 +1535,173 @@ func TestConvertGeminiResponseToOpenAIResponses_MessageOutputItemDoneFields(t *t
 		t.Fatalf("missing message response.output_item.done event")
 	}
 }
+
+func TestConvertGeminiResponseToOpenAIResponses_InlineDataStreaming(t *testing.T) {
+	chunks := [][]byte{
+		[]byte("data: " + `{"responseId":"resp_stream_img_1","candidates":[{"content":{"role":"model","parts":[{"inlineData":{"mimeType":"image/png","data":"aW1hZ2VkYXRh"}}]}}]}` + "\n\n"),
+		[]byte("data: " + `{"responseId":"resp_stream_img_1","candidates":[{"content":{"role":"model","parts":[{"text":""}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":10,"totalTokenCount":15}}` + "\n\n"),
+	}
+
+	originalReq := []byte(`{"model":"gemini-2.5-flash"}`)
+	var param any
+	var (
+		gotItemAdded      bool
+		gotPartialImage   bool
+		gotItemDone       bool
+		gotCompleted      bool
+		completedOutput   string
+		addedOutputFormat string
+		partialFormat     string
+		partialB64        string
+		doneResult        string
+	)
+
+	for _, chunk := range chunks {
+		events := ConvertGeminiResponseToOpenAIResponses(context.Background(), "gemini-2.5-flash", originalReq, nil, chunk, &param)
+		for _, evBytes := range events {
+			event, data := parseSSEEvent(t, evBytes)
+			switch event {
+			case "response.output_item.added":
+				if data.Get("item.type").String() == "image_generation_call" {
+					gotItemAdded = true
+					addedOutputFormat = data.Get("item.output_format").String()
+				}
+			case "response.image_generation_call.partial_image":
+				gotPartialImage = true
+				partialFormat = data.Get("output_format").String()
+				partialB64 = data.Get("partial_image_b64").String()
+			case "response.output_item.done":
+				if data.Get("item.type").String() == "image_generation_call" {
+					gotItemDone = true
+					doneResult = data.Get("item.result").String()
+				}
+			case "response.completed":
+				gotCompleted = true
+				completedOutput = data.Get("response.output.0.type").String()
+				if data.Get("response.output.0.result").String() != "aW1hZ2VkYXRh" {
+					t.Fatalf("unexpected completed image result: %s", data.Get("response.output.0.result").String())
+				}
+			}
+		}
+	}
+
+	if !gotItemAdded {
+		t.Fatalf("expected response.output_item.added for image_generation_call")
+	}
+	if addedOutputFormat != "png" {
+		t.Fatalf("output_format = %q, want png", addedOutputFormat)
+	}
+	if !gotPartialImage {
+		t.Fatalf("expected response.image_generation_call.partial_image event")
+	}
+	if partialFormat != "png" || partialB64 != "aW1hZ2VkYXRh" {
+		t.Fatalf("partial_image mismatch: format=%q, b64=%q", partialFormat, partialB64)
+	}
+	if !gotItemDone {
+		t.Fatalf("expected response.output_item.done for image_generation_call")
+	}
+	if doneResult != "aW1hZ2VkYXRh" {
+		t.Fatalf("item.result = %q, want aW1hZ2VkYXRh", doneResult)
+	}
+	if !gotCompleted {
+		t.Fatalf("expected response.completed event")
+	}
+	if completedOutput != "image_generation_call" {
+		t.Fatalf("completed response output.0.type = %q, want image_generation_call", completedOutput)
+	}
+}
+
+func TestConvertGeminiResponseToOpenAIResponsesNonStream_InlineData(t *testing.T) {
+	t.Run("inlineData with mimeType image/jpeg", func(t *testing.T) {
+		rawJSON := []byte(`{
+			"responseId": "resp_nonstream_img_1",
+			"candidates": [
+				{
+					"content": {
+						"role": "model",
+						"parts": [
+							{
+								"inlineData": {
+									"mimeType": "image/jpeg",
+									"data": "anBnZGF0YQ=="
+								}
+							}
+						]
+					},
+					"finishReason": "STOP"
+				}
+			],
+			"usageMetadata": {
+				"promptTokenCount": 10,
+				"candidatesTokenCount": 20,
+				"totalTokenCount": 30
+			}
+		}`)
+
+		originalReq := []byte(`{"model":"gemini-2.5-flash"}`)
+		result := ConvertGeminiResponseToOpenAIResponsesNonStream(context.Background(), "gemini-2.5-flash", originalReq, nil, rawJSON, nil)
+
+		parsed := gjson.ParseBytes(result)
+		outputs := parsed.Get("output").Array()
+		if len(outputs) != 1 {
+			t.Fatalf("expected 1 output item, got %d; result: %s", len(outputs), string(result))
+		}
+		item := outputs[0]
+		if got := item.Get("type").String(); got != "image_generation_call" {
+			t.Fatalf("type = %q, want image_generation_call", got)
+		}
+		if got := item.Get("status").String(); got != "completed" {
+			t.Fatalf("status = %q, want completed", got)
+		}
+		if got := item.Get("output_format").String(); got != "jpeg" {
+			t.Fatalf("output_format = %q, want jpeg", got)
+		}
+		if got := item.Get("result").String(); got != "anBnZGF0YQ==" {
+			t.Fatalf("result = %q, want anBnZGF0YQ==", got)
+		}
+		if got := item.Get("id").String(); got != "ig_nonstream_img_1_0" {
+			t.Fatalf("id = %q, want ig_nonstream_img_1_0", got)
+		}
+	})
+
+	t.Run("inline_data with mime_type image/png", func(t *testing.T) {
+		rawJSON := []byte(`{
+			"responseId": "resp_nonstream_img_2",
+			"candidates": [
+				{
+					"content": {
+						"role": "model",
+						"parts": [
+							{
+								"inline_data": {
+									"mime_type": "image/png",
+									"data": "cG5nZGF0YQ=="
+								}
+							}
+						]
+					},
+					"finishReason": "STOP"
+				}
+			]
+		}`)
+
+		originalReq := []byte(`{"model":"gemini-2.5-flash"}`)
+		result := ConvertGeminiResponseToOpenAIResponsesNonStream(context.Background(), "gemini-2.5-flash", originalReq, nil, rawJSON, nil)
+
+		parsed := gjson.ParseBytes(result)
+		outputs := parsed.Get("output").Array()
+		if len(outputs) != 1 {
+			t.Fatalf("expected 1 output item, got %d; result: %s", len(outputs), string(result))
+		}
+		item := outputs[0]
+		if got := item.Get("type").String(); got != "image_generation_call" {
+			t.Fatalf("type = %q, want image_generation_call", got)
+		}
+		if got := item.Get("output_format").String(); got != "png" {
+			t.Fatalf("output_format = %q, want png", got)
+		}
+		if got := item.Get("result").String(); got != "cG5nZGF0YQ==" {
+			t.Fatalf("result = %q, want cG5nZGF0YQ==", got)
+		}
+	})
+}

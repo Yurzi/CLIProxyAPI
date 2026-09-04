@@ -32,6 +32,12 @@ type geminiCompletedReasoningItem struct {
 	Text      string
 }
 
+type geminiCompletedImageItem struct {
+	ID           string
+	OutputFormat string
+	Result       string
+}
+
 type geminiToResponsesState struct {
 	Seq        int
 	ResponseID string
@@ -60,6 +66,7 @@ type geminiToResponsesState struct {
 	DetachedReasoning         map[int]geminiDetachedReasoningItem
 	CompletedMessages         map[int]geminiCompletedMessageItem
 	CompletedReasoning        map[int]geminiCompletedReasoningItem
+	CompletedImages           map[int]geminiCompletedImageItem
 	SeenReasoningSignatures   map[string]bool
 	LastSemanticKind          string
 
@@ -150,6 +157,7 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 			CompletedMessages:       make(map[int]geminiCompletedMessageItem),
 			CompletedReasoning:      make(map[int]geminiCompletedReasoningItem),
 			CompletedWebSearch:      make(map[int][]byte),
+			CompletedImages:         make(map[int]geminiCompletedImageItem),
 			SeenReasoningSignatures: make(map[string]bool),
 			SanitizedNameMap:        util.SanitizedToolNameMap(originalRequestRawJSON),
 			ToolIdentityMap:         util.ResponsesToolReverseIdentityMap(reqJSON),
@@ -188,6 +196,9 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 	}
 	if st.CompletedWebSearch == nil {
 		st.CompletedWebSearch = make(map[int][]byte)
+	}
+	if st.CompletedImages == nil {
+		st.CompletedImages = make(map[int]geminiCompletedImageItem)
 	}
 	if st.SeenReasoningSignatures == nil {
 		st.SeenReasoningSignatures = make(map[string]bool)
@@ -502,9 +513,65 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 		}
 	}
 
-	// Handle parts (text/thought/functionCall)
+	// Handle parts (text/thought/functionCall/inlineData)
 	if parts := root.Get("candidates.0.content.parts"); parts.Exists() && parts.IsArray() {
 		parts.ForEach(func(_, part gjson.Result) bool {
+			inlineData := part.Get("inlineData")
+			if !inlineData.Exists() {
+				inlineData = part.Get("inline_data")
+			}
+			if inlineData.Exists() {
+				data := inlineData.Get("data").String()
+				if data != "" {
+					finalizeReasoning()
+					finalizeMessage()
+					mimeType := inlineData.Get("mimeType").String()
+					if mimeType == "" {
+						mimeType = inlineData.Get("mime_type").String()
+					}
+					outputFormat := "png"
+					if idx := strings.Index(mimeType, "/"); idx >= 0 {
+						outputFormat = mimeType[idx+1:]
+					}
+					callID := fmt.Sprintf("ig_%s_%d", st.ResponseID, st.NextIndex)
+					imgIndex := st.NextIndex
+					st.NextIndex++
+
+					// 1. Emit response.output_item.added
+					itemAdded := []byte(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"image_generation_call","status":"in_progress","output_format":""}}`)
+					itemAdded, _ = sjson.SetBytes(itemAdded, "sequence_number", nextSeq())
+					itemAdded, _ = sjson.SetBytes(itemAdded, "output_index", imgIndex)
+					itemAdded, _ = sjson.SetBytes(itemAdded, "item.id", callID)
+					itemAdded, _ = sjson.SetBytes(itemAdded, "item.output_format", outputFormat)
+					out = append(out, emitEvent("response.output_item.added", itemAdded))
+
+					// 2. Emit response.image_generation_call.partial_image
+					partialImg := []byte(`{"type":"response.image_generation_call.partial_image","sequence_number":0,"output_index":0,"item_id":"","output_format":"","partial_image_b64":"","partial_image_index":0}`)
+					partialImg, _ = sjson.SetBytes(partialImg, "sequence_number", nextSeq())
+					partialImg, _ = sjson.SetBytes(partialImg, "output_index", imgIndex)
+					partialImg, _ = sjson.SetBytes(partialImg, "item_id", callID)
+					partialImg, _ = sjson.SetBytes(partialImg, "output_format", outputFormat)
+					partialImg, _ = sjson.SetBytes(partialImg, "partial_image_b64", data)
+					out = append(out, emitEvent("response.image_generation_call.partial_image", partialImg))
+
+					// 3. Emit response.output_item.done
+					itemDone := []byte(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{"id":"","type":"image_generation_call","status":"completed","output_format":"","result":""}}`)
+					itemDone, _ = sjson.SetBytes(itemDone, "sequence_number", nextSeq())
+					itemDone, _ = sjson.SetBytes(itemDone, "output_index", imgIndex)
+					itemDone, _ = sjson.SetBytes(itemDone, "item.id", callID)
+					itemDone, _ = sjson.SetBytes(itemDone, "item.output_format", outputFormat)
+					itemDone, _ = sjson.SetBytes(itemDone, "item.result", data)
+					out = append(out, emitEvent("response.output_item.done", itemDone))
+
+					st.CompletedImages[imgIndex] = geminiCompletedImageItem{
+						ID:           callID,
+						OutputFormat: outputFormat,
+						Result:       data,
+					}
+				}
+				return true
+			}
+
 			signature := strings.TrimSpace(part.Get("thoughtSignature").String())
 			if signature == "" {
 				signature = strings.TrimSpace(part.Get("thought_signature").String())
@@ -951,6 +1018,14 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 				outputs = append(outputs, completedWebSearch)
 				continue
 			}
+			if img, ok := st.CompletedImages[idx]; ok {
+				item := []byte(`{"id":"","type":"image_generation_call","status":"completed","output_format":"","result":""}`)
+				item, _ = sjson.SetBytes(item, "id", img.ID)
+				item, _ = sjson.SetBytes(item, "output_format", img.OutputFormat)
+				item, _ = sjson.SetBytes(item, "result", img.Result)
+				outputs = append(outputs, item)
+				continue
+			}
 			if completedReasoning, ok := st.CompletedReasoning[idx]; ok {
 				item := []byte(`{"id":"","type":"reasoning","encrypted_content":"","summary":[{"type":"summary_text","text":""}]}`)
 				item, _ = sjson.SetBytes(item, "id", completedReasoning.ID)
@@ -1170,6 +1245,7 @@ func ConvertGeminiResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 	var reasoningOutputs []nonStreamReasoningOutput
 	var functionOutputs []nonStreamFunctionOutput
 	var messageOutputs []nonStreamMessageOutput
+	var imageOutputs [][]byte
 	var outputOrder []nonStreamOutputOrder
 	reasoningOutputSignatures := make(map[string]bool)
 	flushReasoningOutput := func() {
@@ -1229,6 +1305,34 @@ func ConvertGeminiResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 
 	if parts := root.Get("candidates.0.content.parts"); parts.Exists() && parts.IsArray() {
 		parts.ForEach(func(_, p gjson.Result) bool {
+			inlineData := p.Get("inlineData")
+			if !inlineData.Exists() {
+				inlineData = p.Get("inline_data")
+			}
+			if inlineData.Exists() {
+				data := inlineData.Get("data").String()
+				if data != "" {
+					flushReasoningOutput()
+					flushMessageOutput()
+					mimeType := inlineData.Get("mimeType").String()
+					if mimeType == "" {
+						mimeType = inlineData.Get("mime_type").String()
+					}
+					outputFormat := "png"
+					if idx := strings.Index(mimeType, "/"); idx >= 0 {
+						outputFormat = mimeType[idx+1:]
+					}
+					callID := fmt.Sprintf("ig_%s_%d", strings.TrimPrefix(id, "resp_"), len(imageOutputs))
+					itemJSON := []byte(`{"id":"","type":"image_generation_call","status":"completed","output_format":"","result":""}`)
+					itemJSON, _ = sjson.SetBytes(itemJSON, "id", callID)
+					itemJSON, _ = sjson.SetBytes(itemJSON, "output_format", outputFormat)
+					itemJSON, _ = sjson.SetBytes(itemJSON, "result", data)
+					imageOutputs = append(imageOutputs, itemJSON)
+					outputOrder = append(outputOrder, nonStreamOutputOrder{kind: "image", index: len(imageOutputs) - 1})
+				}
+				return true
+			}
+
 			signature := strings.TrimSpace(p.Get("thoughtSignature").String())
 			if signature == "" {
 				signature = strings.TrimSpace(p.Get("thought_signature").String())
@@ -1357,6 +1461,10 @@ func ConvertGeminiResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 	visibleTextOffset := int64(0)
 	for _, outputItem := range outputOrder {
 		switch outputItem.kind {
+		case "image":
+			if outputItem.index >= 0 && outputItem.index < len(imageOutputs) {
+				appendOutput(imageOutputs[outputItem.index])
+			}
 		case "detached":
 			if outputItem.index < 0 || outputItem.index >= len(detachedReasoningOutputs) {
 				continue

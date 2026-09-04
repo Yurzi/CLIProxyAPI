@@ -1980,3 +1980,124 @@ func TestConvertOpenAIResponsesRequestToGemini_TwoTurnCustomToolRoundtripWithRea
 		t.Fatalf("expected functionResponse result '/workspace', got: %s", userRespParts[0].Raw)
 	}
 }
+
+func TestConvertOpenAIResponsesRequestToGemini_Modalities(t *testing.T) {
+	inputJSON := `{
+		"model": "gemini-2.5-flash",
+		"modalities": ["image", "text"],
+		"input": "Draw a cat"
+	}`
+
+	result := ConvertOpenAIResponsesRequestToGemini("gemini-2.5-flash", []byte(inputJSON), false)
+
+	mods := gjson.GetBytes(result, "generationConfig.responseModalities").Array()
+	if len(mods) != 2 {
+		t.Fatalf("expected 2 responseModalities, got %d; result: %s", len(mods), result)
+	}
+	if mods[0].String() != "IMAGE" || mods[1].String() != "TEXT" {
+		t.Fatalf("expected [IMAGE, TEXT], got [%s, %s]; result: %s", mods[0].String(), mods[1].String(), result)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToGemini_ImageGenerationTool(t *testing.T) {
+	t.Run("tools with aspect_ratio", func(t *testing.T) {
+		inputJSON := `{
+			"model": "gemini-2.5-flash",
+			"tools": [
+				{"type": "image_generation", "aspect_ratio": "16:9"}
+			],
+			"input": "A beautiful sunset"
+		}`
+
+		result := ConvertOpenAIResponsesRequestToGemini("gemini-2.5-flash", []byte(inputJSON), false)
+
+		mods := gjson.GetBytes(result, "generationConfig.responseModalities").Array()
+		if len(mods) != 2 {
+			t.Fatalf("expected 2 responseModalities, got %d; result: %s", len(mods), result)
+		}
+		hasImage, hasText := false, false
+		for _, m := range mods {
+			if m.String() == "IMAGE" {
+				hasImage = true
+			}
+			if m.String() == "TEXT" {
+				hasText = true
+			}
+		}
+		if !hasImage || !hasText {
+			t.Fatalf("expected responseModalities to contain IMAGE and TEXT, got: %s", result)
+		}
+
+		if got := gjson.GetBytes(result, "generationConfig.imageConfig.aspectRatio").String(); got != "16:9" {
+			t.Fatalf("aspectRatio = %q, want 16:9; result: %s", got, result)
+		}
+
+		// Verify image_generation tool is naturally excluded from functionDeclarations
+		if tools := gjson.GetBytes(result, "tools"); tools.Exists() {
+			t.Fatalf("expected tools to be absent or contain no non-function tools; got: %s", tools.Raw)
+		}
+	})
+
+	t.Run("tools with size 1024x1024", func(t *testing.T) {
+		inputJSON := `{
+			"model": "gemini-2.5-flash",
+			"tools": [
+				{"type": "image_generation", "size": "1024x1024"}
+			],
+			"input": "A portrait"
+		}`
+
+		result := ConvertOpenAIResponsesRequestToGemini("gemini-2.5-flash", []byte(inputJSON), false)
+
+		if got := gjson.GetBytes(result, "generationConfig.imageConfig.aspectRatio").String(); got != "1:1" {
+			t.Fatalf("aspectRatio = %q, want 1:1; result: %s", got, result)
+		}
+	})
+
+	t.Run("tool_choice with size 1792x1024", func(t *testing.T) {
+		inputJSON := `{
+			"model": "gemini-2.5-flash",
+			"tool_choice": {"type": "image_generation", "size": "1792x1024"},
+			"input": "A panoramic wallpaper"
+		}`
+
+		result := ConvertOpenAIResponsesRequestToGemini("gemini-2.5-flash", []byte(inputJSON), false)
+
+		if got := gjson.GetBytes(result, "generationConfig.imageConfig.aspectRatio").String(); got != "16:9" {
+			t.Fatalf("aspectRatio = %q, want 16:9; result: %s", got, result)
+		}
+		mods := gjson.GetBytes(result, "generationConfig.responseModalities").Array()
+		hasImage, hasText := false, false
+		for _, m := range mods {
+			if m.String() == "IMAGE" {
+				hasImage = true
+			}
+			if m.String() == "TEXT" {
+				hasText = true
+			}
+		}
+		if !hasImage || !hasText {
+			t.Fatalf("expected responseModalities to contain IMAGE and TEXT, got: %s", result)
+		}
+	})
+}
+
+func TestConvertOpenAIResponsesRequestToGemini_ImageConfig(t *testing.T) {
+	inputJSON := `{
+		"model": "gemini-2.5-flash",
+		"image_config": {
+			"aspect_ratio": "4:3",
+			"image_size": "2K"
+		},
+		"input": "Mountain landscape"
+	}`
+
+	result := ConvertOpenAIResponsesRequestToGemini("gemini-2.5-flash", []byte(inputJSON), false)
+
+	if got := gjson.GetBytes(result, "generationConfig.imageConfig.aspectRatio").String(); got != "4:3" {
+		t.Fatalf("aspectRatio = %q, want 4:3; result: %s", got, result)
+	}
+	if got := gjson.GetBytes(result, "generationConfig.imageConfig.imageSize").String(); got != "2K" {
+		t.Fatalf("imageSize = %q, want 2K; result: %s", got, result)
+	}
+}
