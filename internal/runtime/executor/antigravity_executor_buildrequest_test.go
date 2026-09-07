@@ -237,6 +237,30 @@ func TestAntigravityBuildRequest_PreservesIndependentWebSearchRequestType(t *tes
 	}
 }
 
+func TestAntigravityBuildRequest_EnablesIncludeServerSideToolInvocationsForMixedTools(t *testing.T) {
+	body := buildRequestBodyFromRawPayload(t, "gemini-3.8-flash-high", []byte(`{
+		"request": {
+			"contents": [{"role": "user", "parts": [{"text": "hello"}]}],
+			"tools": [
+				{"functionDeclarations": [{"name": "exec_command"}]},
+				{"googleSearch": {}}
+			]
+		}
+	}`))
+
+	reqMap, ok := body["request"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected request map in body: %v", body)
+	}
+	toolConfig, ok := reqMap["toolConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected toolConfig in request: %v", reqMap)
+	}
+	if got, ok := toolConfig["includeServerSideToolInvocations"].(bool); !ok || !got {
+		t.Fatalf("expected includeServerSideToolInvocations=true, got: %v", toolConfig["includeServerSideToolInvocations"])
+	}
+}
+
 func TestShouldResolveAntigravityWebSearchGroundingURLsRequiresTypedWebSearchAndSearchRequest(t *testing.T) {
 	original := []byte(`{"tools":[{"type":"web_search_20250305","name":"web_search"}]}`)
 	translatedWithGoogleSearch := []byte(`{"requestType":"web_search","request":{"tools":[{"googleSearch":{}}]}}`)

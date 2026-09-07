@@ -48,6 +48,32 @@ func TestConvertOpenAIResponsesRequestToGemini_WebSearchAndFunctionToolsRemainSe
 	if !tools[1].Get("googleSearch").Exists() {
 		t.Fatalf("googleSearch must be a separate Gemini tool: %s", output)
 	}
+	if !gjson.GetBytes(output, "toolConfig.includeServerSideToolInvocations").Bool() {
+		t.Fatalf("expected toolConfig.includeServerSideToolInvocations=true, got: %s", output)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToGemini_WebSearchExternalWebAccessFalse(t *testing.T) {
+	input := []byte(`{
+		"model":"gemini-test",
+		"input":"find the release and save it",
+		"tools":[
+			{"type":"web_search","external_web_access":false},
+			{"type":"function","name":"save_release","description":"Save a release","parameters":{"type":"object","properties":{"version":{"type":"string"}}}}
+		]
+	}`)
+	output := ConvertOpenAIResponsesRequestToGemini("gemini-test", input, false)
+
+	tools := gjson.GetBytes(output, "tools").Array()
+	if len(tools) != 1 {
+		t.Fatalf("tools length = %d, want 1; output=%s", len(tools), output)
+	}
+	if got := tools[0].Get("functionDeclarations.0.name").String(); got != "save_release" {
+		t.Fatalf("function declaration name = %q, want save_release; output=%s", got, output)
+	}
+	if gjson.GetBytes(output, "toolConfig.includeServerSideToolInvocations").Exists() {
+		t.Fatalf("unexpected includeServerSideToolInvocations when web search is disabled: %s", output)
+	}
 }
 
 func TestConvertGeminiResponseToOpenAIResponsesNonStream_WebSearchGrounding(t *testing.T) {
