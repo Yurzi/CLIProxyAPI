@@ -1423,4 +1423,3 @@ func TestConvertOpenAIRequestToGeminiImageGenerationTool(t *testing.T) {
 		}
 	})
 }
-

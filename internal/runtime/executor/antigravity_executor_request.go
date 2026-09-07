@@ -764,6 +764,31 @@ func geminiToAntigravityDoc(doc *ojson.Doc, modelName string, projectID string, 
 		_ = doc.SetRawBytes("request.toolConfig", []byte(toolConfig.Raw))
 		_ = doc.Delete("toolConfig")
 	}
+	if toolConfig := doc.Get("tool_config"); toolConfig.Exists() && !doc.Get("request.toolConfig").Exists() && !doc.Get("request.tool_config").Exists() {
+		_ = doc.SetRawBytes("request.toolConfig", []byte(toolConfig.Raw))
+		_ = doc.Delete("tool_config")
+	}
+	if tools := doc.Get("request.tools"); tools.IsArray() {
+		hasFunc := false
+		hasBuiltin := false
+		for _, tool := range tools.Array() {
+			if tool.Get("functionDeclarations").Exists() || tool.Get("function_declarations").Exists() {
+				hasFunc = true
+			}
+			if tool.Get("googleSearch").Exists() || tool.Get("google_search").Exists() ||
+				tool.Get("codeExecution").Exists() || tool.Get("code_execution").Exists() ||
+				tool.Get("urlContext").Exists() || tool.Get("url_context").Exists() {
+				hasBuiltin = true
+			}
+		}
+		if hasFunc && hasBuiltin {
+			if doc.Get("request.tool_config").Exists() {
+				_ = doc.Set("request.tool_config.include_server_side_tool_invocations", true)
+			} else {
+				_ = doc.Set("request.toolConfig.includeServerSideToolInvocations", true)
+			}
+		}
+	}
 }
 
 func generateRequestID() string {
