@@ -497,6 +497,31 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string, der
 		template, _ = sjson.SetRawBytes(template, "request.toolConfig", []byte(toolConfig.Raw))
 		template, _ = sjson.DeleteBytes(template, "toolConfig")
 	}
+	if toolConfig := gjson.GetBytes(template, "tool_config"); toolConfig.Exists() && !gjson.GetBytes(template, "request.toolConfig").Exists() && !gjson.GetBytes(template, "request.tool_config").Exists() {
+		template, _ = sjson.SetRawBytes(template, "request.toolConfig", []byte(toolConfig.Raw))
+		template, _ = sjson.DeleteBytes(template, "tool_config")
+	}
+	if tools := gjson.GetBytes(template, "request.tools"); tools.IsArray() {
+		hasFunc := false
+		hasBuiltin := false
+		for _, tool := range tools.Array() {
+			if tool.Get("functionDeclarations").Exists() || tool.Get("function_declarations").Exists() {
+				hasFunc = true
+			}
+			if tool.Get("googleSearch").Exists() || tool.Get("google_search").Exists() ||
+				tool.Get("codeExecution").Exists() || tool.Get("code_execution").Exists() ||
+				tool.Get("urlContext").Exists() || tool.Get("url_context").Exists() {
+				hasBuiltin = true
+			}
+		}
+		if hasFunc && hasBuiltin {
+			if gjson.GetBytes(template, "request.tool_config").Exists() {
+				template, _ = sjson.SetBytes(template, "request.tool_config.include_server_side_tool_invocations", true)
+			} else {
+				template, _ = sjson.SetBytes(template, "request.toolConfig.includeServerSideToolInvocations", true)
+			}
+		}
+	}
 	return template
 }
 
