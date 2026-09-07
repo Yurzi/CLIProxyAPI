@@ -31,6 +31,9 @@ func hasOpenAIResponsesWebSearchTool(payload []byte) bool {
 		}
 		for _, tool := range tools.Array() {
 			if isOpenAIResponsesWebSearchToolType(tool.Get("type").String()) {
+				if externalWebAccess := tool.Get("external_web_access"); externalWebAccess.Exists() && !externalWebAccess.Bool() {
+					continue
+				}
 				return true
 			}
 		}

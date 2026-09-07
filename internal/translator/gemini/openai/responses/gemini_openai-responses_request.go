@@ -46,6 +46,9 @@ func ConvertOpenAIResponsesRequestToGemini(modelName string, inputRawJSON []byte
 			out, _ = sjson.SetRawBytes(out, "toolConfig.functionCallingConfig", toolConfig)
 		}
 	}
+	if len(functionDeclarations) > 0 && hasOpenAIResponsesWebSearchTool(inputRawJSON) {
+		out, _ = sjson.SetBytes(out, "toolConfig.includeServerSideToolInvocations", true)
+	}
 
 	// Extract system instruction from OpenAI "instructions" field.
 	systemParts := make([][]byte, 0, 2)

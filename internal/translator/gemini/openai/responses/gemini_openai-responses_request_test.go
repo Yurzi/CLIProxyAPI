@@ -2439,6 +2439,9 @@ func TestConvertOpenAIResponsesRequestToGemini_FunctionCallOutputWithFCOItemID(t
 	}
 	if gotName := responses[0].Get("functionResponse.name").String(); gotName != "Bash" {
 		t.Fatalf("response name = %q, want Bash", gotName)
+	}
+}
+
 func TestConvertOpenAIResponsesRequestToGemini_Modalities(t *testing.T) {
 	inputJSON := `{
 		"model": "gemini-2.5-flash",

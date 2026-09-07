@@ -28,6 +28,32 @@ func TestConvertOpenAIResponsesRequestToAntigravity_PreservesWebSearchTool(t *te
 	if !tools[1].Get("googleSearch").Exists() {
 		t.Fatalf("Antigravity request dropped googleSearch: %s", output)
 	}
+	if !gjson.GetBytes(output, "request.toolConfig.includeServerSideToolInvocations").Bool() {
+		t.Fatalf("expected toolConfig.includeServerSideToolInvocations=true, got: %s", output)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToAntigravity_DropsWebSearchWhenExternalWebAccessFalse(t *testing.T) {
+	input := []byte(`{
+		"model":"gemini-3.1-flash-lite",
+		"input":"latest Go release",
+		"tools":[
+			{"type":"web_search","external_web_access":false},
+			{"type":"function","name":"save_release","parameters":{"type":"object"}}
+		]
+	}`)
+	output := ConvertOpenAIResponsesRequestToAntigravity("gemini-3.1-flash-lite", input, false)
+
+	tools := gjson.GetBytes(output, "request.tools").Array()
+	if len(tools) != 1 {
+		t.Fatalf("request.tools length = %d, want 1; output=%s", len(tools), output)
+	}
+	if got := tools[0].Get("functionDeclarations.0.name").String(); got != "save_release" {
+		t.Fatalf("function declaration name = %q, want save_release; output=%s", got, output)
+	}
+	if gjson.GetBytes(output, "request.toolConfig.includeServerSideToolInvocations").Exists() {
+		t.Fatalf("unexpected includeServerSideToolInvocations when only functions present: %s", output)
+	}
 }
 
 func TestConvertAntigravityResponseToOpenAIResponsesNonStream_WebSearchGrounding(t *testing.T) {
