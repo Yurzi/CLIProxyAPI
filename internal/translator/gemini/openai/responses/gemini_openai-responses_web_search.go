@@ -66,6 +66,9 @@ func HasResponsesWebSearchTool(root gjson.Result) bool {
 	}
 	for _, tool := range tools.Array() {
 		if isResponsesWebSearchToolType(tool.Get("type").String()) {
+			if externalWebAccess := tool.Get("external_web_access"); externalWebAccess.Exists() && !externalWebAccess.Bool() {
+				continue
+			}
 			return true
 		}
 	}
@@ -81,6 +84,9 @@ func HasOnlyResponsesWebSearchTools(root gjson.Result) bool {
 	hasSearch := false
 	for _, tool := range tools.Array() {
 		if isResponsesWebSearchToolType(tool.Get("type").String()) {
+			if externalWebAccess := tool.Get("external_web_access"); externalWebAccess.Exists() && !externalWebAccess.Bool() {
+				continue
+			}
 			hasSearch = true
 			continue
 		}
