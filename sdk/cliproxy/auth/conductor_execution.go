@@ -407,7 +407,7 @@ func requestToFormat(provider string, executor ProviderExecutor, req cliproxyexe
 		}
 	}
 	source := opts.SourceFormat.String()
-	if source == "openai-image" || source == "openai-video" || source == "openai-speech" {
+	if source == "openai-image" || source == "openai-video" || source == "openai-speech" || source == "openai-embedding" || source == "openai-rerank" {
 		return opts.SourceFormat
 	}
 	if opts.Alt == "responses/compact" && !opts.Stream {

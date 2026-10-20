@@ -173,7 +173,15 @@ func openAICompatSignature(entry config.OpenAICompatibility) string {
 		if name == "" && alias == "" {
 			continue
 		}
-		models = append(models, strings.ToLower(name)+"|"+strings.ToLower(alias)+"|"+strings.TrimSpace(model.DisplayName)+"|"+fmt.Sprintf("image=%t", model.Image))
+		signature := strings.ToLower(name) + "|" + strings.ToLower(alias) + "|" + strings.TrimSpace(model.DisplayName) + "|" + fmt.Sprintf("image=%t", model.Image)
+		// Append endpoint flags only when set so existing signatures stay stable.
+		if model.Embedding {
+			signature += "|embedding=true"
+		}
+		if model.Rerank {
+			signature += "|rerank=true"
+		}
+		models = append(models, signature)
 	}
 	if len(models) > 0 {
 		sort.Strings(models)

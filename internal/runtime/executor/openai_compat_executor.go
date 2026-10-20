@@ -100,6 +100,9 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	if endpointPath := openAICompatImageEndpointPath(opts); endpointPath != "" {
 		return e.executeImages(ctx, auth, req, opts, endpointPath)
 	}
+	if endpointPath := openAICompatJSONEndpointPath(opts); endpointPath != "" {
+		return e.executeJSONEndpoint(ctx, auth, req, opts, endpointPath)
+	}
 	baseURL, apiKey := e.resolveCredentials(auth)
 	compat := e.resolveCompatConfig(auth, req)
 	return e.executeWithCredentials(ctx, auth, req, opts, baseURL, apiKey, compat)
