@@ -66,6 +66,40 @@ func TestBuildOpenAICompatibilityConfigModels_InputModalities(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAICompatibilityConfigModels_EndpointModelTypes(t *testing.T) {
+	compat := &config.OpenAICompatibility{
+		Name: "siliconflow",
+		Models: []config.OpenAICompatibilityModel{
+			{Name: "BAAI/bge-m3", Alias: "bge-m3", Embedding: true},
+			{Name: "BAAI/bge-reranker-v2-m3", Alias: "bge-reranker", Rerank: true},
+			{Name: "Qwen/Qwen3-8B", Alias: "qwen3-8b"},
+		},
+	}
+
+	wantTypes := map[string]string{
+		"bge-m3":       registry.OpenAIEmbeddingModelType,
+		"bge-reranker": registry.OpenAIRerankModelType,
+		"qwen3-8b":     "openai-compatibility",
+	}
+	models := buildOpenAICompatibilityConfigModels(compat)
+	if len(models) != len(wantTypes) {
+		t.Fatalf("model count = %d, want %d", len(models), len(wantTypes))
+	}
+	for _, model := range models {
+		want, ok := wantTypes[model.ID]
+		if !ok {
+			t.Fatalf("unexpected model %q", model.ID)
+		}
+		if model.Type != want {
+			t.Fatalf("%s type = %q, want %q", model.ID, model.Type, want)
+		}
+		hasThinking := model.Thinking != nil
+		if hasThinking != (want == "openai-compatibility") {
+			t.Fatalf("%s thinking = %+v, want default thinking only for chat models", model.ID, model.Thinking)
+		}
+	}
+}
+
 func joinModalities(modalities []string) string {
 	if len(modalities) == 0 {
 		return ""

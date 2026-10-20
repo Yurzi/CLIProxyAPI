@@ -37,6 +37,15 @@ func TestComputeOpenAICompatModelsHash_IncludesImageFlag(t *testing.T) {
 	}
 }
 
+func TestComputeOpenAICompatModelsHash_IncludesEndpointFlags(t *testing.T) {
+	textModel := ComputeOpenAICompatModelsHash([]config.OpenAICompatibilityModel{{Name: "bge-m3", Alias: "bge"}})
+	embeddingModel := ComputeOpenAICompatModelsHash([]config.OpenAICompatibilityModel{{Name: "bge-m3", Alias: "bge", Embedding: true}})
+	rerankModel := ComputeOpenAICompatModelsHash([]config.OpenAICompatibilityModel{{Name: "bge-m3", Alias: "bge", Rerank: true}})
+	if textModel == embeddingModel || textModel == rerankModel || embeddingModel == rerankModel {
+		t.Fatal("hash should change when embedding or rerank flag changes")
+	}
+}
+
 func TestComputeOpenAICompatModelsHashIncludesModalities(t *testing.T) {
 	base := []config.OpenAICompatibilityModel{{Name: "model", InputModalities: []string{"text"}, OutputModalities: []string{"text"}}}
 	inputChanged := []config.OpenAICompatibilityModel{{Name: "model", InputModalities: []string{"text", "image"}, OutputModalities: []string{"text"}}}
