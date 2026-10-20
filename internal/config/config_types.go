@@ -1035,6 +1035,12 @@ type OpenAICompatibilityModel struct {
 	// Image marks this model as callable through /v1/images/generations and /v1/images/edits.
 	Image bool `yaml:"image,omitempty" json:"image,omitempty"`
 
+	// Embedding marks this model as callable through /v1/embeddings.
+	Embedding bool `yaml:"embedding,omitempty" json:"embedding,omitempty"`
+
+	// Rerank marks this model as callable through /v1/rerank.
+	Rerank bool `yaml:"rerank,omitempty" json:"rerank,omitempty"`
+
 	// InputModalities declares chat/responses input capabilities (e.g. text, image) for Codex and other clients.
 	// This is separate from Image, which only enables /v1/images/* endpoints.
 	InputModalities []string `yaml:"input-modalities,omitempty" json:"input-modalities,omitempty"`
@@ -1056,6 +1062,21 @@ type OpenAICompatibilityModel struct {
 }
 
 func (m OpenAICompatibilityModel) GetName() string { return m.Name }
+
+// EndpointModelType returns the registry model type for endpoint-only models
+// (image, embedding, rerank), or an empty string for chat models.
+func (m OpenAICompatibilityModel) EndpointModelType() string {
+	switch {
+	case m.Image:
+		return registry.OpenAIImageModelType
+	case m.Embedding:
+		return registry.OpenAIEmbeddingModelType
+	case m.Rerank:
+		return registry.OpenAIRerankModelType
+	default:
+		return ""
+	}
+}
 
 func (m OpenAICompatibilityModel) GetAlias() string { return m.Alias }
 
