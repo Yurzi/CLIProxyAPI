@@ -41,8 +41,10 @@ func TestComputeOpenAICompatModelsHash_IncludesEndpointFlags(t *testing.T) {
 	textModel := ComputeOpenAICompatModelsHash([]config.OpenAICompatibilityModel{{Name: "bge-m3", Alias: "bge"}})
 	embeddingModel := ComputeOpenAICompatModelsHash([]config.OpenAICompatibilityModel{{Name: "bge-m3", Alias: "bge", Embedding: true}})
 	rerankModel := ComputeOpenAICompatModelsHash([]config.OpenAICompatibilityModel{{Name: "bge-m3", Alias: "bge", Rerank: true}})
-	if textModel == embeddingModel || textModel == rerankModel || embeddingModel == rerankModel {
-		t.Fatal("hash should change when embedding or rerank flag changes")
+	transcriptionModel := ComputeOpenAICompatModelsHash([]config.OpenAICompatibilityModel{{Name: "bge-m3", Alias: "bge", Transcription: true}})
+	hashes := map[string]bool{textModel: true, embeddingModel: true, rerankModel: true, transcriptionModel: true}
+	if len(hashes) != 4 {
+		t.Fatal("hash should change when embedding, rerank, or transcription flag changes")
 	}
 }
 

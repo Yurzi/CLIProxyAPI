@@ -385,26 +385,26 @@ func TestGeminiImageAspectRatioFromSize(t *testing.T) {
 func TestBuildGeminiChatImagesRequest(t *testing.T) {
 	req := buildGeminiChatImagesRequest("draw a sunset", "gemini-3.1-flash-image", "1792x1024")
 
-	if got := gjson.GetBytes(req, "model").String(); got != "gemini-3.1-flash-image" {
+	if got := ojson.GetBytesNoCopy(req, "model").String(); got != "gemini-3.1-flash-image" {
 		t.Fatalf("model = %q, want gemini-3.1-flash-image", got)
 	}
-	if got := gjson.GetBytes(req, "messages.0.role").String(); got != "user" {
+	if got := ojson.GetBytesNoCopy(req, "messages.0.role").String(); got != "user" {
 		t.Fatalf("role = %q, want user", got)
 	}
-	if got := gjson.GetBytes(req, "messages.0.content").String(); got != "draw a sunset" {
+	if got := ojson.GetBytesNoCopy(req, "messages.0.content").String(); got != "draw a sunset" {
 		t.Fatalf("content = %q, want draw a sunset", got)
 	}
-	modalities := gjson.GetBytes(req, "modalities").Array()
+	modalities := ojson.GetBytesNoCopy(req, "modalities").Array()
 	if len(modalities) != 2 || modalities[0].String() != "image" || modalities[1].String() != "text" {
-		t.Fatalf("modalities = %s, want [\"image\", \"text\"]", gjson.GetBytes(req, "modalities").Raw)
+		t.Fatalf("modalities = %s, want [\"image\", \"text\"]", ojson.GetBytesNoCopy(req, "modalities").Raw)
 	}
-	if got := gjson.GetBytes(req, "image_config.aspect_ratio").String(); got != "16:9" {
+	if got := ojson.GetBytesNoCopy(req, "image_config.aspect_ratio").String(); got != "16:9" {
 		t.Fatalf("image_config.aspect_ratio = %q, want 16:9", got)
 	}
 
 	reqNoSize := buildGeminiChatImagesRequest("draw a sunset", "gemini-3.1-flash-image", "")
-	if gjson.GetBytes(reqNoSize, "image_config.aspect_ratio").Exists() {
-		t.Fatalf("expected no aspect_ratio when size is empty, got %s", gjson.GetBytes(reqNoSize, "image_config").Raw)
+	if ojson.GetBytesNoCopy(reqNoSize, "image_config.aspect_ratio").Exists() {
+		t.Fatalf("expected no aspect_ratio when size is empty, got %s", ojson.GetBytesNoCopy(reqNoSize, "image_config").Raw)
 	}
 }
 
@@ -415,13 +415,13 @@ func TestBuildGeminiChatImagesEditRequest(t *testing.T) {
 	}
 	req := buildGeminiChatImagesEditRequest("add sunglasses", "antigravity/gemini-3.1-flash-image", "1024x1024", images)
 
-	if got := gjson.GetBytes(req, "model").String(); got != "antigravity/gemini-3.1-flash-image" {
+	if got := ojson.GetBytesNoCopy(req, "model").String(); got != "antigravity/gemini-3.1-flash-image" {
 		t.Fatalf("model = %q, want antigravity/gemini-3.1-flash-image", got)
 	}
-	if got := gjson.GetBytes(req, "messages.0.role").String(); got != "user" {
+	if got := ojson.GetBytesNoCopy(req, "messages.0.role").String(); got != "user" {
 		t.Fatalf("role = %q, want user", got)
 	}
-	content := gjson.GetBytes(req, "messages.0.content").Array()
+	content := ojson.GetBytesNoCopy(req, "messages.0.content").Array()
 	if len(content) != 3 {
 		t.Fatalf("content parts len = %d, want 3", len(content))
 	}
@@ -434,11 +434,11 @@ func TestBuildGeminiChatImagesEditRequest(t *testing.T) {
 	if content[2].Get("type").String() != "text" || content[2].Get("text").String() != "add sunglasses" {
 		t.Fatalf("content[2] = %s", content[2].Raw)
 	}
-	modalities := gjson.GetBytes(req, "modalities").Array()
+	modalities := ojson.GetBytesNoCopy(req, "modalities").Array()
 	if len(modalities) != 2 || modalities[0].String() != "image" || modalities[1].String() != "text" {
-		t.Fatalf("modalities = %s, want [\"image\", \"text\"]", gjson.GetBytes(req, "modalities").Raw)
+		t.Fatalf("modalities = %s, want [\"image\", \"text\"]", ojson.GetBytesNoCopy(req, "modalities").Raw)
 	}
-	if got := gjson.GetBytes(req, "image_config.aspect_ratio").String(); got != "1:1" {
+	if got := ojson.GetBytesNoCopy(req, "image_config.aspect_ratio").String(); got != "1:1" {
 		t.Fatalf("image_config.aspect_ratio = %q, want 1:1", got)
 
 	}
