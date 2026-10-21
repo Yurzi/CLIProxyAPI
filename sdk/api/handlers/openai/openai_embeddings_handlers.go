@@ -10,7 +10,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 const (
@@ -50,11 +50,11 @@ func (h *OpenAIAPIHandler) handleJSONEndpoint(c *gin.Context, endpoint jsonEndpo
 		writeJSONEndpointError(c, clienterror.HTTPStatusFromErrorOr(err, http.StatusBadRequest), fmt.Sprintf("Invalid request: %v", err))
 		return
 	}
-	if !gjson.ValidBytes(rawJSON) {
+	if !ojson.ValidBytes(rawJSON) {
 		writeJSONEndpointError(c, http.StatusBadRequest, "Invalid request: body must be valid JSON")
 		return
 	}
-	modelName := strings.TrimSpace(gjson.GetBytes(rawJSON, "model").String())
+	modelName := strings.TrimSpace(ojson.GetBytesNoCopy(rawJSON, "model").String())
 	if !isRegisteredModelOfType(modelName, endpoint.modelType) {
 		writeJSONEndpointError(c, http.StatusBadRequest, fmt.Sprintf("Model %s is not supported on %s. Configure an openai-compatibility model with %s: true.", modelName, endpoint.path, endpoint.configFlag))
 		return
