@@ -680,6 +680,14 @@ upstream:
 #             - "context_window_exceeded"
 #           action: "stop-and-cooldown"
 #       base-url: "https://www.example.com" # use the custom codex API endpoint
+#       # Optional: role sent upstream for input messages with role "system" or "developer".
+#       # "developer" rewrites both to developer.
+#       # "system" is for Responses-compatible upstreams that reject the developer role and accept
+#       # only one system message at the beginning: leading system/developer messages and a non-empty
+#       # instructions value are merged into one leading system message; later ones are sent as user
+#       # messages wrapped in <system-reminder>.
+#       # Omit to keep the built-in Codex behavior (system is converted to developer). Payload rules still apply afterwards.
+#       instruction-role: "developer"
 #       headers:
 #         X-Custom-Header: "custom-value"
 #         # Values starting with "$" dynamically copy the header value from downstream client requests.

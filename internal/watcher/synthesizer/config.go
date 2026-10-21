@@ -262,6 +262,11 @@ func (s *ConfigSynthesizer) synthesizeCodexStyleKeys(ctx *SynthesisContext, entr
 		if provider == "codex" && entry.DisableCodexCloaking != nil {
 			attrs[coreauth.AttributeCodexDisableCloaking] = strconv.FormatBool(*entry.DisableCodexCloaking)
 		}
+		if provider == "codex" {
+			if role := config.NormalizeCodexInstructionRole(entry.InstructionRole); role != "" {
+				attrs[coreauth.AttributeCodexInstructionRole] = role
+			}
+		}
 		if hash := diff.ComputeCodexModelsHash(entry.Models); hash != "" {
 			attrs["models_hash"] = hash
 		}

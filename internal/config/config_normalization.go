@@ -343,6 +343,12 @@ func sanitizeCodexKeyEntries(entries []CodexKey) []CodexKey {
 		e.BaseURL = strings.TrimSpace(e.BaseURL)
 		e.Headers = NormalizeHeaders(e.Headers)
 		e.ExcludedModels = NormalizeExcludedModels(e.ExcludedModels)
+		if role := NormalizeCodexInstructionRole(e.InstructionRole); role == "" && strings.TrimSpace(e.InstructionRole) != "" {
+			log.Warnf("config: ignoring unsupported instruction-role %q (want %q or %q)", e.InstructionRole, CodexInstructionRoleDeveloper, CodexInstructionRoleSystem)
+			e.InstructionRole = ""
+		} else {
+			e.InstructionRole = role
+		}
 		if e.BaseURL == "" {
 			continue
 		}
