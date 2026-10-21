@@ -18,6 +18,11 @@ import (
 // ApplyMediaPayloadConfig exposes multipart fields as JSON business values. File
 // parts use {filename, content_type, data} with base64 data; framing stays opaque.
 func ApplyMediaPayloadConfig(cfg *config.Config, executor, model, protocol string, body []byte, contentType string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) ([]byte, string, error) {
+	// Without payload rules nothing can change a non-JSON body, so skip decoding large
+	// uploads (audio files, edit images) into base64 JSON views.
+	if !PayloadRulesConfigured(cfg) && !json.Valid(body) {
+		return body, contentType, nil
+	}
 	view, multipartBody, errDecode := mediaPayloadJSON(body, contentType)
 	if errDecode != nil {
 		return nil, "", errDecode

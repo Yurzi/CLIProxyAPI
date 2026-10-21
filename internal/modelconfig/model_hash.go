@@ -28,6 +28,9 @@ func ComputeOpenAICompatModelsHash(models []config.OpenAICompatibilityModel) str
 			if model.Rerank {
 				key += "|rerank=true"
 			}
+			if model.Transcription {
+				key += "|transcription=true"
+			}
 			out(key)
 		}
 	})

@@ -72,6 +72,7 @@ func TestBuildOpenAICompatibilityConfigModels_EndpointModelTypes(t *testing.T) {
 		Models: []config.OpenAICompatibilityModel{
 			{Name: "BAAI/bge-m3", Alias: "bge-m3", Embedding: true},
 			{Name: "BAAI/bge-reranker-v2-m3", Alias: "bge-reranker", Rerank: true},
+			{Name: "FunAudioLLM/SenseVoiceSmall", Alias: "whisper-1", Transcription: true},
 			{Name: "Qwen/Qwen3-8B", Alias: "qwen3-8b"},
 		},
 	}
@@ -79,6 +80,7 @@ func TestBuildOpenAICompatibilityConfigModels_EndpointModelTypes(t *testing.T) {
 	wantTypes := map[string]string{
 		"bge-m3":       registry.OpenAIEmbeddingModelType,
 		"bge-reranker": registry.OpenAIRerankModelType,
+		"whisper-1":    registry.OpenAITranscriptionModelType,
 		"qwen3-8b":     "openai-compatibility",
 	}
 	models := buildOpenAICompatibilityConfigModels(compat)

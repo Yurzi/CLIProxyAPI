@@ -40,6 +40,14 @@ func (h *BaseAPIHandler) ExecuteImageWithAuthManager(ctx context.Context, handle
 	return h.executeWithAuthManager(ctx, handlerType, modelName, rawJSON, alt, true)
 }
 
+// ExecuteVerbatimWithAuthManager executes a non-streaming request whose upstream body is
+// returned verbatim in a format chosen upstream (e.g. audio transcription text, subtitles,
+// or JSON). The upstream Content-Type is always kept so callers can label the body, even
+// when response header passthrough is disabled.
+func (h *BaseAPIHandler) ExecuteVerbatimWithAuthManager(ctx context.Context, handlerType, modelName string, rawBody []byte) ([]byte, http.Header, *interfaces.ErrorMessage) {
+	return h.executeWithAuthManagerFormats(ctx, handlerType, handlerType, modelName, rawBody, "", false, modelExecutionOptions{KeepContentType: true})
+}
+
 func (h *BaseAPIHandler) executeWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string, allowImageModel bool) ([]byte, http.Header, *interfaces.ErrorMessage) {
 	return h.executeWithAuthManagerFormats(ctx, handlerType, handlerType, modelName, rawJSON, alt, allowImageModel, modelExecutionOptions{})
 }
@@ -115,8 +123,24 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	passthroughHeaders := executionPassthroughHeaders(h.CurrentConfig(), execOptions.InternalSource)
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, passthroughHeaders)
 	body, responseHeaders := h.applyResponseInterceptors(ctx, lifecycle.requestID(), responseProtocol, normalizedModel, originalRequestedModel, executedOpts, rawResponseHeaders, responseHeaders, executedOpts.OriginalRequest, executedReq.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID, passthroughHeaders)
+	if execOptions.KeepContentType {
+		responseHeaders = keepUpstreamContentType(responseHeaders, rawResponseHeaders)
+	}
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	return body, responseHeaders, nil
+}
+
+// keepUpstreamContentType copies the upstream Content-Type into dst unless dst already has one.
+func keepUpstreamContentType(dst, upstream http.Header) http.Header {
+	contentType := upstream.Get("Content-Type")
+	if contentType == "" || dst.Get("Content-Type") != "" {
+		return dst
+	}
+	if dst == nil {
+		dst = make(http.Header)
+	}
+	dst.Set("Content-Type", contentType)
+	return dst
 }
 
 // ExecuteCountWithAuthManager executes a non-streaming request via the core auth manager.
@@ -235,6 +259,9 @@ func (h *BaseAPIHandler) executeWithPluginExecutor(ctx context.Context, entryPro
 	passthroughHeaders := executionPassthroughHeaders(h.CurrentConfig(), execOptions.InternalSource)
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, passthroughHeaders)
 	body, responseHeaders := h.applyResponseInterceptors(execCtx, lifecycle.requestID(), responseProtocol, modelName, originalRequestedModel, opts, rawResponseHeaders, responseHeaders, opts.OriginalRequest, req.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID, passthroughHeaders)
+	if execOptions.KeepContentType {
+		responseHeaders = keepUpstreamContentType(responseHeaders, rawResponseHeaders)
+	}
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	return body, responseHeaders, nil
 }

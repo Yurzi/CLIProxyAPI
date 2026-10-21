@@ -9,6 +9,7 @@ func TestGetFirstAvailableModelSkipsEndpointOnlyModels(t *testing.T) {
 		{ID: "image-model", Created: 200, Type: OpenAIImageModelType},
 		{ID: "embedding-model", Created: 300, Type: OpenAIEmbeddingModelType},
 		{ID: "rerank-model", Created: 400, Type: OpenAIRerankModelType},
+		{ID: "transcription-model", Created: 500, Type: OpenAITranscriptionModelType},
 	})
 
 	got, err := r.GetFirstAvailableModel("")

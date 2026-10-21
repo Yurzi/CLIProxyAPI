@@ -36,6 +36,15 @@ func ApplyPayloadConfigWithRequestForExecutor(cfg *config.Config, targetExecutor
 	return out
 }
 
+// PayloadRulesConfigured reports whether any user payload rule is configured.
+func PayloadRulesConfigured(cfg *config.Config) bool {
+	if cfg == nil {
+		return false
+	}
+	rules := cfg.Payload
+	return len(rules.Default) != 0 || len(rules.DefaultRaw) != 0 || len(rules.Override) != 0 || len(rules.OverrideRaw) != 0 || len(rules.Filter) != 0
+}
+
 func isCodexTargetExecutor(targetExecutor string) bool {
 	te := strings.ToLower(strings.TrimSpace(targetExecutor))
 	return te == "codex" || te == "codex-websockets" || te == "codex_websockets"
@@ -81,8 +90,7 @@ func ApplyPayloadConfigWithTrackedPathsForExecutor(cfg *config.Config, targetExe
 	}
 
 	rules := cfg.Payload
-	hasPayloadRules := len(rules.Default) != 0 || len(rules.DefaultRaw) != 0 || len(rules.Override) != 0 || len(rules.OverrideRaw) != 0 || len(rules.Filter) != 0
-	if hasPayloadRules {
+	if PayloadRulesConfigured(cfg) {
 		model = strings.TrimSpace(model)
 		requestedModel = strings.TrimSpace(requestedModel)
 		if model != "" || requestedModel != "" {

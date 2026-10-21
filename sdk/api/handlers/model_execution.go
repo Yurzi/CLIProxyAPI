@@ -28,6 +28,8 @@ type modelExecutionOptions struct {
 	ProxyURL                string
 	Path                    string
 	AllowSpeechModel        bool
+	// KeepContentType reports the upstream Content-Type even without header passthrough.
+	KeepContentType bool
 }
 
 // ProtocolExecutionRequest describes a route-level model execution request with explicit protocols.
