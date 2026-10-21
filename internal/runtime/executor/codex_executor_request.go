@@ -158,6 +158,16 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 	return httpReq, rawJSON, nil
 }
 
+// applyCodexInstructionRole applies the API-key provider's instruction-role to
+// system/developer input messages. Callers run it after all other built-in body
+// normalization and before the payload finalizer, so user payload rules still win.
+func applyCodexInstructionRole(body []byte, auth *cliproxyauth.Auth) []byte {
+	if auth == nil || len(auth.Attributes) == 0 {
+		return body
+	}
+	return helps.RewriteCodexInstructionRole(body, auth.Attributes[cliproxyauth.AttributeCodexInstructionRole])
+}
+
 func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, stream bool, cfg *config.Config, clientHeaders ...http.Header) {
 	var ginHeaders http.Header
 	if len(clientHeaders) > 0 && clientHeaders[0] != nil {

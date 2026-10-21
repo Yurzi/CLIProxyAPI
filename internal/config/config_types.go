@@ -764,6 +764,33 @@ type CodexKey struct {
 
 	// RequestScopedErrors configures custom classification rules for upstream errors.
 	RequestScopedErrors []RequestScopedErrorRule `yaml:"request-scoped-errors,omitempty" json:"request-scoped-errors,omitempty"`
+
+	// InstructionRole selects the role sent upstream for input messages whose role is
+	// "system" or "developer". "developer" rewrites both to developer. "system" targets
+	// Responses-compatible upstreams that reject the developer role and accept only one
+	// system message at the beginning: leading system/developer messages and a non-empty
+	// instructions value are merged into one leading system message, and later ones are
+	// sent as user messages wrapped in <system-reminder>.
+	// Empty keeps the built-in Codex behavior (system is converted to developer).
+	// Only Codex API keys use this field.
+	InstructionRole string `yaml:"instruction-role,omitempty" json:"instruction-role,omitempty"`
+}
+
+// Supported CodexKey.InstructionRole values.
+const (
+	CodexInstructionRoleDeveloper = "developer"
+	CodexInstructionRoleSystem    = "system"
+)
+
+// NormalizeCodexInstructionRole returns the canonical instruction role, or "" for
+// empty and unsupported values.
+func NormalizeCodexInstructionRole(value string) string {
+	switch role := strings.ToLower(strings.TrimSpace(value)); role {
+	case CodexInstructionRoleDeveloper, CodexInstructionRoleSystem:
+		return role
+	default:
+		return ""
+	}
 }
 
 func (k CodexKey) GetAPIKey() string { return k.APIKey }
