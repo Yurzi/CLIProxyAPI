@@ -221,6 +221,9 @@ func openAICompatSignature(entry config.OpenAICompatibility) string {
 		if model.Rerank {
 			signature += "|rerank=true"
 		}
+		if model.Transcription {
+			signature += "|transcription=true"
+		}
 		models = append(models, signature)
 	}
 	if len(models) > 0 {
