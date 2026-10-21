@@ -20,9 +20,9 @@ const (
 	rerankPath            = "/v1/rerank"
 )
 
-// jsonEndpoint describes an OpenAI-style JSON endpoint served only by models
+// typedModelEndpoint describes an OpenAI-style endpoint served only by models
 // registered with a dedicated model type.
-type jsonEndpoint struct {
+type typedModelEndpoint struct {
 	handlerType string
 	modelType   string
 	path        string
@@ -30,8 +30,8 @@ type jsonEndpoint struct {
 }
 
 var (
-	embeddingsEndpoint = jsonEndpoint{handlerType: embeddingsHandlerType, modelType: registry.OpenAIEmbeddingModelType, path: embeddingsPath, configFlag: "embedding"}
-	rerankEndpoint     = jsonEndpoint{handlerType: rerankHandlerType, modelType: registry.OpenAIRerankModelType, path: rerankPath, configFlag: "rerank"}
+	embeddingsEndpoint = typedModelEndpoint{handlerType: embeddingsHandlerType, modelType: registry.OpenAIEmbeddingModelType, path: embeddingsPath, configFlag: "embedding"}
+	rerankEndpoint     = typedModelEndpoint{handlerType: rerankHandlerType, modelType: registry.OpenAIRerankModelType, path: rerankPath, configFlag: "rerank"}
 )
 
 // Embeddings handles POST /v1/embeddings for openai-compatibility models marked embedding: true.
@@ -44,7 +44,7 @@ func (h *OpenAIAPIHandler) Rerank(c *gin.Context) {
 	h.handleJSONEndpoint(c, rerankEndpoint)
 }
 
-func (h *OpenAIAPIHandler) handleJSONEndpoint(c *gin.Context, endpoint jsonEndpoint) {
+func (h *OpenAIAPIHandler) handleJSONEndpoint(c *gin.Context, endpoint typedModelEndpoint) {
 	rawJSON, err := handlers.ReadRequestBody(c)
 	if err != nil {
 		writeJSONEndpointError(c, clienterror.HTTPStatusFromErrorOr(err, http.StatusBadRequest), fmt.Sprintf("Invalid request: %v", err))
