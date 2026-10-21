@@ -3,6 +3,7 @@ package responses
 import (
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
 	"github.com/tidwall/gjson"
@@ -29,6 +30,10 @@ const (
 	// claudeServerToolIDPrefix is mandated by Anthropic: server tool ids must
 	// match ^srvtoolu_[a-zA-Z0-9_]+$.
 	claudeServerToolIDPrefix = "srvtoolu_"
+
+	// responsesIncludeWebSearchSources is the Responses `include` entry that
+	// asks for web_search_call.action.sources.
+	responsesIncludeWebSearchSources = "web_search_call.action.sources"
 )
 
 // claudeServerToolIDSanitizer matches the characters Anthropic forbids in a
@@ -91,17 +96,176 @@ func claudeWebSearchResultsToResponses(content gjson.Result) []byte {
 	return translatorcommon.JoinRawArray(results)
 }
 
+// responsesRequestIncludesWebSearchSources reports whether a Responses request
+// asked for web_search_call.action.sources through `include`.
+func responsesRequestIncludesWebSearchSources(requestJSON []byte) bool {
+	include := gjson.GetBytes(requestJSON, "include")
+	if !include.IsArray() {
+		return false
+	}
+	found := false
+	include.ForEach(func(_, value gjson.Result) bool {
+		found = value.Type == gjson.String && strings.TrimSpace(value.String()) == responsesIncludeWebSearchSources
+		return !found
+	})
+	return found
+}
+
+// responsesWebSearchSources derives the standard `action.sources` list from the
+// Claude results carried in `results`. A failed or empty search yields an empty
+// list.
+func responsesWebSearchSources(results []byte) []byte {
+	var sources [][]byte
+	seen := map[string]bool{}
+	gjson.ParseBytes(results).ForEach(func(_, entry gjson.Result) bool {
+		url := strings.TrimSpace(entry.Get("url").String())
+		if url == "" || seen[url] {
+			return true
+		}
+		seen[url] = true
+		source := []byte(`{"type":"url","url":""}`)
+		source, _ = sjson.SetBytes(source, "url", url)
+		sources = append(sources, source)
+		return true
+	})
+	return translatorcommon.JoinRawArray(sources)
+}
+
 // buildResponsesWebSearchCallItem renders the Responses item that stands for one
 // Claude server-side search. results may be nil when the upstream turn ended
 // before the result block arrived.
-func buildResponsesWebSearchCallItem(claudeToolUseID, query string, results []byte) []byte {
+//
+// When the request included web_search_call.action.sources, the standard
+// `action.sources` list is derived from the results. The non-standard `results`
+// field stays either way: it carries the encrypted_content that replay needs.
+func buildResponsesWebSearchCallItem(claudeToolUseID, query string, results []byte, includeSources bool) []byte {
 	item := []byte(`{"id":"","type":"web_search_call","status":"completed","action":{"type":"search","query":""}}`)
 	item, _ = sjson.SetBytes(item, "id", responsesWebSearchCallID(claudeToolUseID))
 	item, _ = sjson.SetBytes(item, "action.query", query)
 	if len(results) > 0 {
+		if includeSources {
+			item, _ = sjson.SetRawBytes(item, "action.sources", responsesWebSearchSources(results))
+		}
 		item, _ = sjson.SetRawBytes(item, "results", results)
 	}
 	return item
+}
+
+// claudeCitationTracker resolves the Claude citations of one Responses
+// output_text into annotations. Claude cites a whole text block, and the
+// citations_delta may arrive before or after the block's text, so a citation is
+// resolved once the block its event index names has ended, spanning exactly
+// that block's text. A citation whose index names no text block of this
+// output_text belongs to the next text block, or to the last one when none
+// follows. Offsets count Unicode code points, like the other Responses
+// translators.
+type claudeCitationTracker struct {
+	textLen int
+	// spans holds [start, end) of each closed text block by Claude block index.
+	spans map[int][2]int
+	last  [2]int
+	// open is the Claude index of the open text block, valid while isOpen.
+	open      int
+	openStart int
+	isOpen    bool
+	// openPending belongs to the open block; orphans name no known text block.
+	openPending []string
+	orphans     []string
+}
+
+// startBlock opens the text block with the given Claude index at the current end
+// of the text, adopting the orphan citations. A previous block that never saw
+// its stop event is closed first, and its resolved annotations are returned.
+func (t *claudeCitationTracker) startBlock(index int) [][]byte {
+	var resolved [][]byte
+	if t.isOpen {
+		resolved = t.endBlock(t.open)
+	}
+	t.open, t.openStart, t.isOpen = index, t.textLen, true
+	t.openPending, t.orphans = t.orphans, nil
+	return resolved
+}
+
+func (t *claudeCitationTracker) addText(text string) {
+	t.textLen += utf8.RuneCountInString(text)
+}
+
+// addCitation records a citation for the text block with the given Claude
+// index. A citation for a block that already ended resolves immediately.
+func (t *claudeCitationTracker) addCitation(index int, citation gjson.Result) [][]byte {
+	switch span, closed := t.spans[index]; {
+	case t.isOpen && index == t.open:
+		t.openPending = append(t.openPending, citation.Raw)
+	case closed:
+		return resolveClaudeCitations([]string{citation.Raw}, span)
+	default:
+		t.orphans = append(t.orphans, citation.Raw)
+	}
+	return nil
+}
+
+// endBlock closes the open text block when index names it and resolves its
+// citations.
+func (t *claudeCitationTracker) endBlock(index int) [][]byte {
+	if !t.isOpen || index != t.open {
+		return nil
+	}
+	if t.spans == nil {
+		t.spans = map[int][2]int{}
+	}
+	t.last = [2]int{t.openStart, t.textLen}
+	t.spans[index] = t.last
+	t.isOpen = false
+	resolved := resolveClaudeCitations(t.openPending, t.last)
+	t.openPending = nil
+	return resolved
+}
+
+// finish resolves every remaining citation once the output_text is complete.
+func (t *claudeCitationTracker) finish() [][]byte {
+	var resolved [][]byte
+	if t.isOpen {
+		resolved = t.endBlock(t.open)
+	}
+	resolved = append(resolved, resolveClaudeCitations(t.orphans, t.last)...)
+	t.orphans = nil
+	return resolved
+}
+
+func resolveClaudeCitations(citations []string, span [2]int) [][]byte {
+	if len(citations) == 0 {
+		return nil
+	}
+	annotations := make([][]byte, 0, len(citations))
+	for _, raw := range citations {
+		annotations = append(annotations, claudeCitationToResponsesAnnotation(gjson.Parse(raw), span[0], span[1]))
+	}
+	return annotations
+}
+
+// claudeCitationToResponsesAnnotation renders one Claude citation as a Responses
+// annotation over [start, end) of the output text.
+//
+// web_search_result_location becomes the standard url_citation. cited_text and
+// encrypted_index ride along as extra fields, which OpenAI clients ignore,
+// because Anthropic requires encrypted_index to replay the citation (see
+// responsesAnnotationToClaudeCitation). Other citation kinds have no Responses
+// counterpart and pass through verbatim.
+func claudeCitationToResponsesAnnotation(citation gjson.Result, start, end int) []byte {
+	if citation.Get("type").String() != "web_search_result_location" {
+		return []byte(citation.Raw)
+	}
+	annotation := []byte(`{"type":"url_citation","url":"","title":"","start_index":0,"end_index":0}`)
+	annotation, _ = sjson.SetBytes(annotation, "url", citation.Get("url").String())
+	annotation, _ = sjson.SetBytes(annotation, "title", citation.Get("title").String())
+	annotation, _ = sjson.SetBytes(annotation, "start_index", start)
+	annotation, _ = sjson.SetBytes(annotation, "end_index", end)
+	for _, field := range []string{"cited_text", "encrypted_index"} {
+		if value := citation.Get(field); value.Exists() {
+			annotation, _ = sjson.SetRawBytes(annotation, field, []byte(value.Raw))
+		}
+	}
+	return annotation
 }
 
 // convertResponsesWebSearchCallToClaudeBlocks is the inverse of
@@ -274,18 +438,39 @@ func responsesWebSearchResultsToClaude(results gjson.Result) []byte {
 	return translatorcommon.JoinRawArray(blocks)
 }
 
+// responsesAnnotationToClaudeCitation is the inverse of
+// claudeCitationToResponsesAnnotation. Anthropic rejects a citation without a
+// genuine encrypted_index, so an annotation lacking one - a native OpenAI
+// url_citation, say - yields nil and is dropped. Histories recorded before the
+// url_citation mapping carry the Claude citation verbatim and replay unchanged.
+func responsesAnnotationToClaudeCitation(annotation gjson.Result) []byte {
+	if strings.TrimSpace(annotation.Get("encrypted_index").String()) == "" {
+		return nil
+	}
+	if annotation.Get("type").String() != "url_citation" {
+		return []byte(annotation.Raw)
+	}
+	// Anthropic validates citations strictly, so the Responses-only fields
+	// (start_index, end_index) must not ride along.
+	citation := []byte(`{"type":"web_search_result_location","cited_text":"","url":"","title":"","encrypted_index":""}`)
+	citation, _ = sjson.SetBytes(citation, "cited_text", annotation.Get("cited_text").String())
+	citation, _ = sjson.SetBytes(citation, "url", annotation.Get("url").String())
+	citation, _ = sjson.SetBytes(citation, "title", annotation.Get("title").String())
+	citation, _ = sjson.SetBytes(citation, "encrypted_index", annotation.Get("encrypted_index").String())
+	return citation
+}
+
 // attachClaudeCitations mirrors Responses `annotations` back onto a Claude text
-// block as `citations`. The annotations were copied verbatim from Claude on the
-// way out, so they ride back unchanged; entries without the mandatory
-// `encrypted_index` cannot be replayed and are dropped rather than rejected.
+// block as `citations`; see responsesAnnotationToClaudeCitation for which
+// annotations survive.
 func attachClaudeCitations(textBlock []byte, annotations gjson.Result) []byte {
 	if !annotations.IsArray() {
 		return textBlock
 	}
 	var citations [][]byte
 	annotations.ForEach(func(_, annotation gjson.Result) bool {
-		if strings.TrimSpace(annotation.Get("encrypted_index").String()) != "" {
-			citations = append(citations, []byte(annotation.Raw))
+		if citation := responsesAnnotationToClaudeCitation(annotation); citation != nil {
+			citations = append(citations, citation)
 		}
 		return true
 	})

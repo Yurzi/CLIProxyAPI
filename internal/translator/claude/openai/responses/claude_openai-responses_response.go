@@ -24,6 +24,9 @@ type claudeToResponsesState struct {
 	// response, extracted once in the constructor so the request body
 	// itself is neither retained nor re-scanned per chunk.
 	RequestEcho             responsesRequestEcho
+	// IncludeWebSearchSources reports whether the request included
+	// web_search_call.action.sources.
+	IncludeWebSearchSources bool
 	ToolWinners             map[string]responsesToolDescriptor
 	ToolNames               claudeToolNames
 	FuncItemAdded           map[int]bool
@@ -56,8 +59,12 @@ type claudeToResponsesState struct {
 	// message text aggregation
 	TextBuf            strings.Builder
 	CurrentTextBuf     strings.Builder
-	MessageAnnotations []any
+	MessageAnnotations [][]byte
+	MessageCitations   claudeCitationTracker
 	MessageItems       []claudeResponsesMessageItem
+	// FinishedTextBlocks locates, by Claude block index, the text blocks of
+	// messages already finalized, so a late citation still annotates its block.
+	FinishedTextBlocks map[int]claudeFinishedTextBlock
 	// reasoning state
 	ReasoningActive     bool
 	ReasoningDeltasDone bool
@@ -85,15 +92,22 @@ type claudeResponsesWebSearchItem struct {
 	Status      string
 }
 
-func (item *claudeResponsesWebSearchItem) render() []byte {
-	return buildResponsesWebSearchCallItem(item.ToolUseID, claudeWebSearchQuery(item.InputBuf.String()), item.Results)
+func (item *claudeResponsesWebSearchItem) render(includeSources bool) []byte {
+	return buildResponsesWebSearchCallItem(item.ToolUseID, claudeWebSearchQuery(item.InputBuf.String()), item.Results, includeSources)
+}
+
+// claudeFinishedTextBlock is a text block of a finalized message: message
+// indexes MessageItems and span is the block's [start, end) in its text.
+type claudeFinishedTextBlock struct {
+	message int
+	span    [2]int
 }
 
 type claudeResponsesMessageItem struct {
 	ID          string
 	OutputIndex int
 	Text        string
-	Annotations []any
+	Annotations [][]byte
 	Status      string
 }
 
@@ -456,11 +470,37 @@ func noSSEOutput(out [][]byte) [][]byte {
 	return out
 }
 
-func (st *claudeToResponsesState) appendMessageAnnotation(annotation any) {
-	if annotation == nil {
-		return
+func annotationAddedEvent(sequence int, itemID string, outputIndex, annotationIndex int, annotation []byte) []byte {
+	added := []byte(`{"type":"response.output_text.annotation.added","sequence_number":0,"item_id":"","output_index":0,"content_index":0,"annotation_index":0,"annotation":{}}`)
+	added, _ = sjson.SetBytes(added, "sequence_number", sequence)
+	added, _ = sjson.SetBytes(added, "item_id", itemID)
+	added, _ = sjson.SetBytes(added, "output_index", outputIndex)
+	added, _ = sjson.SetBytes(added, "annotation_index", annotationIndex)
+	added, _ = sjson.SetRawBytes(added, "annotation", annotation)
+	return emitEvent("response.output_text.annotation.added", added)
+}
+
+// appendMessageAnnotations records annotations resolved for the open message
+// and announces each one the way OpenAI streams them.
+func (st *claudeToResponsesState) appendMessageAnnotations(annotations [][]byte, nextSeq func() int) [][]byte {
+	var out [][]byte
+	for _, annotation := range annotations {
+		out = append(out, annotationAddedEvent(nextSeq(), st.CurrentMsgID, st.messageOutputIndex(), len(st.MessageAnnotations), annotation))
+		st.MessageAnnotations = append(st.MessageAnnotations, annotation)
 	}
-	st.MessageAnnotations = append(st.MessageAnnotations, annotation)
+	return out
+}
+
+// appendFinishedMessageAnnotation attaches a late citation to the finalized
+// message owning its text block. That message's output_item.done is already
+// out, so the annotation reaches the client through annotation.added and
+// response.completed, matching the non-streaming output.
+func (st *claudeToResponsesState) appendFinishedMessageAnnotation(block claudeFinishedTextBlock, citation gjson.Result, nextSeq func() int) [][]byte {
+	message := &st.MessageItems[block.message]
+	annotation := claudeCitationToResponsesAnnotation(citation, block.span[0], block.span[1])
+	added := annotationAddedEvent(nextSeq(), message.ID, message.OutputIndex, len(message.Annotations), annotation)
+	message.Annotations = append(message.Annotations, annotation)
+	return [][]byte{added}
 }
 
 func (st *claudeToResponsesState) allocateOutputIndex() int {
@@ -506,7 +546,7 @@ func (st *claudeToResponsesState) finalizeWebSearchWithStatus(item *claudeRespon
 	done := []byte(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{}}`)
 	done, _ = sjson.SetBytes(done, "sequence_number", nextSeq())
 	done, _ = sjson.SetBytes(done, "output_index", item.OutputIndex)
-	rendered := item.render()
+	rendered := item.render(st.IncludeWebSearchSources)
 	rendered, _ = sjson.SetBytes(rendered, "status", status)
 	done, _ = sjson.SetRawBytes(done, "item", rendered)
 	return [][]byte{emitEvent("response.output_item.done", done)}
@@ -823,7 +863,7 @@ func (st *claudeToResponsesState) finalizeAssistantMessage(nextSeq func() int) [
 	fullText := st.TextBuf.String()
 	outputIndex := st.messageOutputIndex()
 	status := claudeResponsesOutputStatus(st.StopReason)
-	var out [][]byte
+	out := st.appendMessageAnnotations(st.MessageCitations.finish(), nextSeq)
 	done := []byte(`{"type":"response.output_text.done","sequence_number":0,"item_id":"","output_index":0,"content_index":0,"text":"","logprobs":[]}`)
 	done, _ = sjson.SetBytes(done, "sequence_number", nextSeq())
 	done, _ = sjson.SetBytes(done, "item_id", st.CurrentMsgID)
@@ -837,7 +877,7 @@ func (st *claudeToResponsesState) finalizeAssistantMessage(nextSeq func() int) [
 	partDone, _ = sjson.SetBytes(partDone, "output_index", outputIndex)
 	partDone, _ = sjson.SetBytes(partDone, "part.text", fullText)
 	if len(st.MessageAnnotations) > 0 {
-		partDone, _ = sjson.SetBytes(partDone, "part.annotations", st.MessageAnnotations)
+		partDone, _ = sjson.SetRawBytes(partDone, "part.annotations", translatorcommon.JoinRawArray(st.MessageAnnotations))
 	}
 	out = append(out, emitEvent("response.content_part.done", partDone))
 
@@ -848,7 +888,7 @@ func (st *claudeToResponsesState) finalizeAssistantMessage(nextSeq func() int) [
 	final, _ = sjson.SetBytes(final, "item.status", status)
 	final, _ = sjson.SetBytes(final, "item.content.0.text", fullText)
 	if len(st.MessageAnnotations) > 0 {
-		final, _ = sjson.SetBytes(final, "item.content.0.annotations", st.MessageAnnotations)
+		final, _ = sjson.SetRawBytes(final, "item.content.0.annotations", translatorcommon.JoinRawArray(st.MessageAnnotations))
 	}
 	out = append(out, emitEvent("response.output_item.done", final))
 
@@ -856,9 +896,15 @@ func (st *claudeToResponsesState) finalizeAssistantMessage(nextSeq func() int) [
 		ID:          st.CurrentMsgID,
 		OutputIndex: outputIndex,
 		Text:        fullText,
-		Annotations: append([]any(nil), st.MessageAnnotations...),
+		Annotations: append([][]byte(nil), st.MessageAnnotations...),
 		Status:      status,
 	})
+	if st.FinishedTextBlocks == nil {
+		st.FinishedTextBlocks = make(map[int]claudeFinishedTextBlock)
+	}
+	for index, span := range st.MessageCitations.spans {
+		st.FinishedTextBlocks[index] = claudeFinishedTextBlock{message: len(st.MessageItems) - 1, span: span}
+	}
 	st.InTextBlock = false
 	st.MessageOpen = false
 	st.ContentPartOpen = false
@@ -867,6 +913,7 @@ func (st *claudeToResponsesState) finalizeAssistantMessage(nextSeq func() int) [
 	st.TextBuf.Reset()
 	st.CurrentTextBuf.Reset()
 	st.MessageAnnotations = nil
+	st.MessageCitations = claudeCitationTracker{}
 	return out
 }
 
@@ -876,6 +923,7 @@ func newClaudeToResponsesState(requestJSON []byte, toolSearch bool) *claudeToRes
 	return &claudeToResponsesState{
 		ToolSearch:              toolSearch,
 		RequestEcho:             extractResponsesRequestEcho(root),
+		IncludeWebSearchSources: responsesRequestIncludesWebSearchSources(requestJSON),
 		ToolWinners:             winners,
 		ToolNames:               buildClaudeToolNamesWithWinners(root, winners, toolSearch),
 		ApplyPatchCalls:         make(map[string]*translatorcommon.ApplyPatchCallState),
@@ -927,7 +975,9 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 			st.TextBuf.Reset()
 			st.CurrentTextBuf.Reset()
 			st.MessageAnnotations = nil
+			st.MessageCitations = claudeCitationTracker{}
 			st.MessageItems = nil
+			st.FinishedTextBlocks = nil
 			st.ReasoningBuf.Reset()
 			st.ReasoningActive = false
 			st.ReasoningDeltasDone = false
@@ -1043,6 +1093,7 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 				out = append(out, emitEvent("response.content_part.added", part))
 				st.ContentPartOpen = true
 			}
+			out = append(out, st.appendMessageAnnotations(st.MessageCitations.startBlock(idx), nextSeq)...)
 		} else if typ == "tool_use" {
 			st.InFuncBlock = true
 			callID, name := cb.Get("id").String(), cb.Get("name").String()
@@ -1169,6 +1220,7 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 				// aggregate text for response.output
 				st.TextBuf.WriteString(t.String())
 				st.CurrentTextBuf.WriteString(t.String())
+				st.MessageCitations.addText(t.String())
 			}
 		} else if dt == "input_json_delta" {
 			if item := st.WebSearchByBlock[int(root.Get("index").Int())]; item != nil {
@@ -1205,15 +1257,21 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 			}
 			return [][]byte{}
 		} else if dt == "citations_delta" {
+			// Resolved into an annotation once the cited text block ends.
 			if citation := d.Get("citation"); citation.Exists() {
-				st.appendMessageAnnotation(citation.Value())
+				idx := int(root.Get("index").Int())
+				if block, ok := st.FinishedTextBlocks[idx]; ok {
+					return st.appendFinishedMessageAnnotation(block, citation, nextSeq)
+				}
+				out = append(out, st.appendMessageAnnotations(st.MessageCitations.addCitation(idx, citation), nextSeq)...)
 			}
-			return [][]byte{}
+			return noSSEOutput(out)
 		}
 	case "content_block_stop":
 		st.FuncBlockStopped[int(root.Get("index").Int())] = true
 		if st.InTextBlock {
 			st.InTextBlock = false
+			out = append(out, st.appendMessageAnnotations(st.MessageCitations.endBlock(int(root.Get("index").Int())), nextSeq)...)
 		} else if st.InFuncBlock {
 			st.InFuncBlock = false
 		} else if st.ReasoningActive {
@@ -1287,7 +1345,7 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 			item, _ = sjson.SetBytes(item, "status", message.Status)
 			item, _ = sjson.SetBytes(item, "content.0.text", message.Text)
 			if len(message.Annotations) > 0 {
-				item, _ = sjson.SetBytes(item, "content.0.annotations", message.Annotations)
+				item, _ = sjson.SetRawBytes(item, "content.0.annotations", translatorcommon.JoinRawArray(message.Annotations))
 			}
 			outputsWrapper, _ = sjson.SetRawBytes(outputsWrapper, fmt.Sprintf("arr.%d", message.OutputIndex), item)
 		}
@@ -1297,7 +1355,7 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 			if status == "" {
 				status = "completed"
 			}
-			rendered := item.render()
+			rendered := item.render(st.IncludeWebSearchSources)
 			rendered, _ = sjson.SetBytes(rendered, "status", status)
 			outputsWrapper, _ = sjson.SetRawBytes(outputsWrapper, fmt.Sprintf("arr.%d", item.OutputIndex), rendered)
 		}
@@ -1439,7 +1497,8 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(ctx context.Context, _ stri
 		name          string
 		text          strings.Builder
 		signature     string
-		annotations   []any
+		annotations   [][]byte
+		citations     claudeCitationTracker
 		args          strings.Builder
 		inputSnapshot string
 		results       []byte
@@ -1451,7 +1510,8 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(ctx context.Context, _ stri
 	nextOutputIndex := 0
 	messageCount := 0
 	var activeMessageItem *nonStreamOutputItem
-	var pendingAnnotations []any
+	// Citations that arrive while no message is open belong to the next text block.
+	var pendingCitations []gjson.Result
 
 	allocateOutputIndex := func() int {
 		outputIndex := nextOutputIndex
@@ -1505,10 +1565,11 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(ctx context.Context, _ stri
 				} else {
 					blockToItem[idx] = item
 				}
-				if len(pendingAnnotations) > 0 {
-					item.annotations = append(item.annotations, pendingAnnotations...)
-					pendingAnnotations = nil
+				item.annotations = append(item.annotations, item.citations.startBlock(idx)...)
+				for _, citation := range pendingCitations {
+					item.citations.addCitation(idx, citation)
 				}
+				pendingCitations = nil
 				activeMessageItem = item
 			case "tool_use":
 				itemType := "function_call"
@@ -1608,6 +1669,7 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(ctx context.Context, _ stri
 				if item != nil && item.itemType == "message" {
 					if t := d.Get("text"); t.Exists() {
 						item.text.WriteString(t.String())
+						item.citations.addText(t.String())
 					}
 				}
 			case "input_json_delta":
@@ -1629,19 +1691,25 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(ctx context.Context, _ stri
 					}
 				}
 			case "citations_delta":
+				// Resolved into an annotation once the cited text block ends.
 				if citation := d.Get("citation"); citation.Exists() {
 					if item != nil && item.itemType == "message" {
-						item.annotations = append(item.annotations, citation.Value())
+						item.annotations = append(item.annotations, item.citations.addCitation(idx, citation)...)
 					} else if activeMessageItem != nil {
-						activeMessageItem.annotations = append(activeMessageItem.annotations, citation.Value())
+						activeMessageItem.annotations = append(activeMessageItem.annotations, activeMessageItem.citations.addCitation(idx, citation)...)
 					} else {
-						pendingAnnotations = append(pendingAnnotations, citation.Value())
+						pendingCitations = append(pendingCitations, citation)
 					}
 				}
 			}
 
 		case "content_block_stop":
-			// Output items are finalized after all deltas have been aggregated.
+			// Output items are finalized after all deltas have been aggregated; the
+			// end of a text block only fixes the span its citations annotate.
+			idx := int(root.Get("index").Int())
+			if item := blockToItem[idx]; item != nil && item.itemType == "message" {
+				item.annotations = append(item.annotations, item.citations.endBlock(idx)...)
+			}
 
 		case "message_delta":
 			usageTokens.Merge(root.Get("usage"))
@@ -1690,15 +1758,16 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(ctx context.Context, _ stri
 			summary, _ = sjson.SetBytes(summary, "text", outputItem.text.String())
 			item, _ = sjson.SetRawBytes(item, "summary", translatorcommon.JoinRawArray([][]byte{summary}))
 		case "web_search_call":
-			item = buildResponsesWebSearchCallItem(outputItem.callID, claudeWebSearchQuery(outputItem.args.String()), outputItem.results)
+			item = buildResponsesWebSearchCallItem(outputItem.callID, claudeWebSearchQuery(outputItem.args.String()), outputItem.results, st.IncludeWebSearchSources)
 			item, _ = sjson.SetBytes(item, "status", claudeResponsesWebSearchStatus(stopReason, itemStatus, len(outputItem.results) > 0))
 		case "message":
 			item = []byte(`{"id":"","type":"message","status":"completed","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":""}],"role":"assistant"}`)
 			item, _ = sjson.SetBytes(item, "id", outputItem.id)
 			item, _ = sjson.SetBytes(item, "status", itemStatus)
 			item, _ = sjson.SetBytes(item, "content.0.text", outputItem.text.String())
-			if len(outputItem.annotations) > 0 {
-				item, _ = sjson.SetBytes(item, "content.0.annotations", outputItem.annotations)
+			annotations := append(outputItem.annotations, outputItem.citations.finish()...)
+			if len(annotations) > 0 {
+				item, _ = sjson.SetRawBytes(item, "content.0.annotations", translatorcommon.JoinRawArray(annotations))
 			}
 		case "tool_search_call":
 			args := outputItem.args.String()

@@ -257,8 +257,13 @@ func TestConvertClaudeResponseToOpenAIResponses_AggregatesTextBlocksUntilMessage
 	if got := completed.Get("response.output.2.content.0.text").String(); got != "Qwen 3.7 Max leads." {
 		t.Fatalf("completed message[2] text = %q, want %q", got, "Qwen 3.7 Max leads.")
 	}
-	if got := completed.Get("response.output.2.content.0.annotations.0.type").String(); got != "web_search_result_location" {
+	// The citation arrived before its text block, so it annotates that block's text.
+	annotation := completed.Get("response.output.2.content.0.annotations.0")
+	if got := annotation.Get("type").String(); got != "url_citation" {
 		t.Fatalf("completed annotation type = %q", got)
+	}
+	if annotation.Get("start_index").Int() != 0 || annotation.Get("end_index").Int() != 19 {
+		t.Fatalf("completed annotation span = %s, want [0,19)", annotation.Raw)
 	}
 }
 
