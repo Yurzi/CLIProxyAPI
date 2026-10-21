@@ -654,17 +654,17 @@ func geminiImageAspectRatioFromSize(size string) string {
 
 func buildGeminiChatImagesRequest(prompt, model, size string) []byte {
 	req := []byte(`{}`)
-	req, _ = sjson.SetBytes(req, "model", strings.TrimSpace(model))
+	req, _ = ojson.SetBytes(req, "model", strings.TrimSpace(model))
 	messages := []map[string]any{
 		{
 			"role":    "user",
 			"content": strings.TrimSpace(prompt),
 		},
 	}
-	req, _ = sjson.SetBytes(req, "messages", messages)
-	req, _ = sjson.SetBytes(req, "modalities", []string{"image", "text"})
+	req, _ = ojson.SetBytes(req, "messages", messages)
+	req, _ = ojson.SetBytes(req, "modalities", []string{"image", "text"})
 	if ar := geminiImageAspectRatioFromSize(size); ar != "" {
-		req, _ = sjson.SetBytes(req, "image_config.aspect_ratio", ar)
+		req, _ = ojson.SetBytes(req, "image_config.aspect_ratio", ar)
 	}
 	return req
 }
@@ -689,24 +689,24 @@ func buildGeminiChatImagesEditRequest(prompt, model, size string, images []strin
 	})
 
 	req := []byte(`{}`)
-	req, _ = sjson.SetBytes(req, "model", strings.TrimSpace(model))
+	req, _ = ojson.SetBytes(req, "model", strings.TrimSpace(model))
 	messages := []map[string]any{
 		{
 			"role":    "user",
 			"content": contentParts,
 		},
 	}
-	req, _ = sjson.SetBytes(req, "messages", messages)
-	req, _ = sjson.SetBytes(req, "modalities", []string{"image", "text"})
+	req, _ = ojson.SetBytes(req, "messages", messages)
+	req, _ = ojson.SetBytes(req, "modalities", []string{"image", "text"})
 	if ar := geminiImageAspectRatioFromSize(size); ar != "" {
-		req, _ = sjson.SetBytes(req, "image_config.aspect_ratio", ar)
+		req, _ = ojson.SetBytes(req, "image_config.aspect_ratio", ar)
 	}
 	return req
 }
 
 func extractImagesFromChatCompletions(resp []byte) ([]imageCallResult, int64, error) {
-	createdAt := gjson.GetBytes(resp, "created").Int()
-	imagesResult := gjson.GetBytes(resp, "choices.0.message.images")
+	createdAt := ojson.GetBytesNoCopy(resp, "created").Int()
+	imagesResult := ojson.GetBytesNoCopy(resp, "choices.0.message.images")
 	if !imagesResult.Exists() || !imagesResult.IsArray() || len(imagesResult.Array()) == 0 {
 		return nil, 0, errors.New("no images returned in chat completions response")
 	}
@@ -979,11 +979,11 @@ func (h *OpenAIAPIHandler) ImagesGenerations(c *gin.Context) {
 		return
 	}
 	if isGeminiChatImageModel(imageModel) {
-		n := int(gjson.GetBytes(rawJSON, "n").Int())
+		n := int(ojson.GetBytesNoCopy(rawJSON, "n").Int())
 		if n <= 0 {
 			n = 1
 		}
-		size := strings.TrimSpace(gjson.GetBytes(rawJSON, "size").String())
+		size := strings.TrimSpace(ojson.GetBytesNoCopy(rawJSON, "size").String())
 		chatReq := buildGeminiChatImagesRequest(prompt, imageModel, size)
 		h.collectGeminiChatImages(c, chatReq, imageModel, responseFormat, n)
 		return
@@ -1314,8 +1314,8 @@ func (h *OpenAIAPIHandler) imagesEditsFromJSON(c *gin.Context) {
 			})
 			return
 		}
-		size := strings.TrimSpace(gjson.GetBytes(rawJSON, "size").String())
-		n := int(gjson.GetBytes(rawJSON, "n").Int())
+		size := strings.TrimSpace(ojson.GetBytesNoCopy(rawJSON, "size").String())
+		n := int(ojson.GetBytesNoCopy(rawJSON, "n").Int())
 		if n <= 0 {
 			n = 1
 		}

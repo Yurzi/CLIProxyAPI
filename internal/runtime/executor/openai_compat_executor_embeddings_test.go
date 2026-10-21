@@ -12,7 +12,7 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 type openAICompatJSONEndpointCapture struct {
@@ -96,14 +96,14 @@ func TestOpenAICompatExecutorJSONEndpointsPassthrough(t *testing.T) {
 			if captured.authorization != "Bearer test" {
 				t.Fatalf("authorization = %q, want Bearer test", captured.authorization)
 			}
-			if got := gjson.GetBytes(captured.body, "model").String(); got != "upstream-model" {
+			if got := ojson.GetBytesNoCopy(captured.body, "model").String(); got != "upstream-model" {
 				t.Fatalf("model = %q, want upstream-model; body=%s", got, captured.body)
 			}
-			if want := gjson.Get(tc.body, tc.check).Raw; gjson.GetBytes(captured.body, tc.check).Raw != want {
+			if want := ojson.Get(tc.body, tc.check).Raw; ojson.GetBytesNoCopy(captured.body, tc.check).Raw != want {
 				t.Fatalf("%s not preserved; body=%s", tc.check, captured.body)
 			}
 			for _, field := range []string{"prompt_cache_key", "messages", "stream", "reasoning_effort", "max_tokens"} {
-				if gjson.GetBytes(captured.body, field).Exists() {
+				if ojson.GetBytesNoCopy(captured.body, field).Exists() {
 					t.Fatalf("unexpected chat field %q in body: %s", field, captured.body)
 				}
 			}
@@ -141,16 +141,16 @@ func TestOpenAICompatExecutorEmbeddingsPayloadRulesAreFinalBarrier(t *testing.T)
 	if err != nil {
 		t.Fatalf("Execute error: %v", err)
 	}
-	if got := gjson.GetBytes(captured.body, "model").String(); got != "forced-embed" {
+	if got := ojson.GetBytesNoCopy(captured.body, "model").String(); got != "forced-embed" {
 		t.Fatalf("model = %q, want payload override forced-embed; body=%s", got, captured.body)
 	}
-	if got := gjson.GetBytes(captured.body, "encoding_format").String(); got != "base64" {
+	if got := ojson.GetBytesNoCopy(captured.body, "encoding_format").String(); got != "base64" {
 		t.Fatalf("encoding_format = %q, want base64; body=%s", got, captured.body)
 	}
-	if got := gjson.GetBytes(captured.body, "dimensions").Int(); got != 1024 {
+	if got := ojson.GetBytesNoCopy(captured.body, "dimensions").Int(); got != 1024 {
 		t.Fatalf("dimensions = %d, want client value 1024; body=%s", got, captured.body)
 	}
-	if got := gjson.GetBytes(captured.body, "user").String(); got != "proxy" {
+	if got := ojson.GetBytesNoCopy(captured.body, "user").String(); got != "proxy" {
 		t.Fatalf("user = %q, want default proxy; body=%s", got, captured.body)
 	}
 }
