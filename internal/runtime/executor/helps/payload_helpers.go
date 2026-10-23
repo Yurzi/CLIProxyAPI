@@ -69,7 +69,6 @@ func PayloadRulesConfigured(cfg *config.Config) bool {
 	rules := cfg.Payload
 	return len(rules.Default) != 0 || len(rules.DefaultRaw) != 0 || len(rules.Override) != 0 || len(rules.OverrideRaw) != 0 || len(rules.Filter) != 0
 }
-}
 
 func isCodexTargetExecutor(targetExecutor string) bool {
 	te := strings.ToLower(strings.TrimSpace(targetExecutor))
