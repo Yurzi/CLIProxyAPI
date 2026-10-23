@@ -23,7 +23,7 @@ type claudeToResponsesState struct {
 	// RequestEcho holds the request fields echoed into the completed
 	// response, extracted once in the constructor so the request body
 	// itself is neither retained nor re-scanned per chunk.
-	RequestEcho             responsesRequestEcho
+	RequestEcho responsesRequestEcho
 	// IncludeWebSearchSources reports whether the request included
 	// web_search_call.action.sources.
 	IncludeWebSearchSources bool

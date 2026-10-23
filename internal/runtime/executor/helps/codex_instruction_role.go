@@ -4,9 +4,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
-	"github.com/MoeForge/moego/ojson"
 )
 
 // RewriteCodexInstructionRole applies an API-key instruction-role to input

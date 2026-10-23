@@ -8,13 +8,13 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/MoeForge/moego/ojson"
 )
 
 const codexInstructionRoleResponsesPayload = `{"model":"gpt-5.5","input":[{"type":"message","role":"system","content":[{"type":"input_text","text":"sys"}]},{"type":"message","role":"developer","content":[{"type":"input_text","text":"dev"}]},{"type":"additional_tools","role":"developer","tools":[{"type":"custom","name":"exec"}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`

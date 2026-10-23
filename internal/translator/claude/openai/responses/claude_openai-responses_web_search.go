@@ -303,6 +303,7 @@ func claudeCitationToResponsesAnnotation(citation ojson.Result, start, end int) 
 	}
 	return annotationDoc.Bytes()
 }
+
 // convertResponsesWebSearchCallToClaudeBlocks is the inverse of
 // buildResponsesWebSearchCallItem: it rebuilds the Claude block pair so a
 // replayed turn still shows that the search happened and what it returned.
