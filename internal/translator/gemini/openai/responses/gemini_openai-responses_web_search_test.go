@@ -5341,26 +5341,51 @@ func TestConvertOpenAIResponsesRequestToGemini_MixedWebSearchAndFunctions(t *tes
 	}
 }
 
-func TestConvertOpenAIResponsesRequestToGemini_WebSearchExternalWebAccessFalse(t *testing.T) {
-	registerTestWebSearchModel(t, "client-test-noweb", "gemini", "gemini-test", true)
-	input := []byte(`{
-		"model":"gemini-test",
-		"input":"find the release and save it",
-		"tools":[
-			{"type":"web_search","external_web_access":false},
-			{"type":"function","name":"save_release","description":"Save a release","parameters":{"type":"object","properties":{"version":{"type":"string"}}}}
-		]
-	}`)
-	output, _ := ConvertOpenAIResponsesRequestToGemini("gemini-test", input, false)
-
-	tools := gjson.GetBytes(output, "tools").Array()
-	if len(tools) != 1 {
-		t.Fatalf("tools length = %d, want 1; output=%s", len(tools), output)
-	}
-	if got := tools[0].Get("functionDeclarations.0.name").String(); got != "save_release" {
-		t.Fatalf("function declaration name = %q, want save_release; output=%s", got, output)
-	}
-	if gjson.GetBytes(output, "toolConfig.includeServerSideToolInvocations").Exists() {
-		t.Fatalf("unexpected includeServerSideToolInvocations when web search is disabled: %s", output)
+func TestConvertOpenAIResponsesRequestToGemini_IgnoresExternalWebAccess(t *testing.T) {
+	modelID := "gemini-external-web-access"
+	registerTestWebSearchModel(t, "client-external-web-access", "gemini", modelID, true)
+	for _, toolType := range []string{"web_search", "web_search_2025_08_26", "web_search_preview", "web_search_preview_2025_03_11"} {
+		for _, access := range []struct {
+			name, field string
+		}{
+			{"omitted", ""},
+			{"true", `,"external_web_access":true`},
+			{"false", `,"external_web_access":false`},
+		} {
+			for _, tc := range []struct {
+				name, extraTool, toolChoice string
+				wantSearch, wantFunction    bool
+			}{
+				{"search_only", "", "auto", true, false},
+				{"mixed", `,{"type":"function","name":"save_release","parameters":{"type":"object"}}`, "auto", true, true},
+				{"choice_none", `,{"type":"function","name":"save_release","parameters":{"type":"object"}}`, "none", false, true},
+			} {
+				t.Run(toolType+"/"+access.name+"/"+tc.name, func(t *testing.T) {
+					input := []byte(`{"model":"` + modelID + `","input":"latest Go release","tools":[{"type":"` + toolType + `"` + access.field + `}` + tc.extraTool + `],"tool_choice":"` + tc.toolChoice + `"}`)
+					root := gjson.ParseBytes(input)
+					if !HasResponsesWebSearchTool(root) || HasOnlyResponsesWebSearchTools(root) != !tc.wantFunction {
+						t.Fatalf("external_web_access must not affect search tool detection: %s", input)
+					}
+					output, err := ConvertOpenAIResponsesRequestToGemini(modelID, input, false)
+					if err != nil {
+						t.Fatalf("convert error: %v", err)
+					}
+					hasSearch, hasFunction := false, false
+					for _, tool := range gjson.GetBytes(output, "tools").Array() {
+						hasSearch = hasSearch || tool.Get("googleSearch").Exists()
+						hasFunction = hasFunction || tool.Get("functionDeclarations.0.name").String() == "save_release"
+					}
+					if hasSearch != tc.wantSearch || hasFunction != tc.wantFunction {
+						t.Fatalf("search=%v, function=%v; want search=%v, function=%v: %s", hasSearch, hasFunction, tc.wantSearch, tc.wantFunction, output)
+					}
+					if got := gjson.GetBytes(output, "toolConfig.includeServerSideToolInvocations").Bool(); got != (tc.wantSearch && tc.wantFunction) {
+						t.Fatalf("unexpected mixed-tool configuration: %s", output)
+					}
+					if gjson.GetBytes(output, "tools.0.external_web_access").Exists() {
+						t.Fatalf("external_web_access must not be forwarded to Gemini: %s", output)
+					}
+				})
+			}
+		}
 	}
 }

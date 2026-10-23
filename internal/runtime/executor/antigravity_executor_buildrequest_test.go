@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -249,27 +250,61 @@ func TestAntigravityBuildRequest_PreservesIndependentWebSearchRequestType(t *tes
 	}
 }
 
-func TestAntigravityBuildRequest_EnablesIncludeServerSideToolInvocationsForMixedTools(t *testing.T) {
-	body := buildRequestBodyFromRawPayload(t, "gemini-3.8-flash-high", []byte(`{
-		"request": {
-			"contents": [{"role": "user", "parts": [{"text": "hello"}]}],
-			"tools": [
-				{"functionDeclarations": [{"name": "exec_command"}]},
-				{"googleSearch": {}}
-			]
+func TestAntigravityBuildRequest_DoesNotInjectIncludeServerSideToolInvocationsForMixedTools(t *testing.T) {
+	for _, toolName := range []string{"googleSearch", "codeExecution", "urlContext", "google_search", "code_execution", "url_context"} {
+		for _, configKey := range []string{"", "toolConfig", "tool_config"} {
+			configName := configKey
+			if configName == "" {
+				configName = "no_config"
+			}
+			t.Run(toolName+"/"+configName, func(t *testing.T) {
+				tools := []any{
+					map[string]any{"functionDeclarations": []any{map[string]any{"name": "exec_command"}}},
+					map[string]any{toolName: map[string]any{}},
+				}
+				request := map[string]any{
+					"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}},
+					"tools":    tools,
+				}
+				config := map[string]any{"functionCallingConfig": map[string]any{"mode": "AUTO"}}
+				if configKey != "" {
+					request[configKey] = config
+				}
+				payload, err := json.Marshal(map[string]any{"request": request})
+				if err != nil {
+					t.Fatalf("marshal request: %v", err)
+				}
+				body := buildRequestBodyFromRawPayload(t, "gemini-3.8-flash-high", payload)
+				reqMap, ok := body["request"].(map[string]any)
+				if !ok {
+					t.Fatalf("expected request map in body: %v", body)
+				}
+				if !reflect.DeepEqual(reqMap["tools"], tools) {
+					t.Fatalf("tools changed: got %v, want %v", reqMap["tools"], tools)
+				}
+				for _, key := range []string{"toolConfig", "tool_config"} {
+					got, exists := reqMap[key]
+					if key != configKey {
+						if exists {
+							t.Errorf("unexpected %s added: %v", key, got)
+						}
+						continue
+					}
+					gotConfig, ok := got.(map[string]any)
+					if !ok {
+						t.Fatalf("expected %s map in request: %v", key, reqMap)
+					}
+					for _, flag := range []string{"includeServerSideToolInvocations", "include_server_side_tool_invocations"} {
+						if value, exists := gotConfig[flag]; exists {
+							t.Errorf("unexpected %s.%s added: %v", key, flag, value)
+						}
+					}
+					if !reflect.DeepEqual(gotConfig, config) {
+						t.Errorf("%s changed: got %v, want %v", key, gotConfig, config)
+					}
+				}
+			})
 		}
-	}`))
-
-	reqMap, ok := body["request"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected request map in body: %v", body)
-	}
-	toolConfig, ok := reqMap["toolConfig"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected toolConfig in request: %v", reqMap)
-	}
-	if got, ok := toolConfig["includeServerSideToolInvocations"].(bool); !ok || !got {
-		t.Fatalf("expected includeServerSideToolInvocations=true, got: %v", toolConfig["includeServerSideToolInvocations"])
 	}
 }
 

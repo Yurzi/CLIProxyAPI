@@ -59,6 +59,7 @@ func isResponsesWebSearchToolType(toolType string) bool {
 }
 
 // HasResponsesWebSearchTool checks if the request tools array contains an OpenAI web search tool.
+// external_web_access is ignored because Google Search has no equivalent cache-only mode.
 func HasResponsesWebSearchTool(root gjson.Result) bool {
 	tools := root.Get("tools")
 	if !tools.IsArray() {
@@ -66,9 +67,6 @@ func HasResponsesWebSearchTool(root gjson.Result) bool {
 	}
 	for _, tool := range tools.Array() {
 		if isResponsesWebSearchToolType(tool.Get("type").String()) {
-			if externalWebAccess := tool.Get("external_web_access"); externalWebAccess.Exists() && !externalWebAccess.Bool() {
-				continue
-			}
 			return true
 		}
 	}
@@ -84,9 +82,6 @@ func HasOnlyResponsesWebSearchTools(root gjson.Result) bool {
 	hasSearch := false
 	for _, tool := range tools.Array() {
 		if isResponsesWebSearchToolType(tool.Get("type").String()) {
-			if externalWebAccess := tool.Get("external_web_access"); externalWebAccess.Exists() && !externalWebAccess.Bool() {
-				continue
-			}
 			hasSearch = true
 			continue
 		}
