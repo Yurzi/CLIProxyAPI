@@ -14,7 +14,6 @@ import (
 
 	"github.com/MoeForge/moego/base64"
 	"github.com/MoeForge/moego/json"
-
 	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
@@ -38,6 +37,7 @@ const (
 	defaultXAIImagesModel       = "grok-imagine-image"
 	xaiImagesQualityModel       = "grok-imagine-image-quality"
 	xaiImages20Model            = "grok-imagine-image-2.0"
+	geminiFlashImageModel       = "gemini-3.1-flash-image"
 	xaiImagesHandlerType        = "openai-image"
 	xaiImagesDefaultAspectRatio = "1:1"
 	xaiImagesDefaultResolution  = "1k"
@@ -315,11 +315,26 @@ func isXAIImagesModel(model string) bool {
 	return ok
 }
 
+func isGeminiChatImageModel(model string) bool {
+	baseModel := imagesModelBase(model)
+	if baseModel == "" {
+		return false
+	}
+	if strings.Contains(baseModel, "flash-image") || strings.Contains(baseModel, "imagen") {
+		return true
+	}
+	info := registry.LookupModelInfo(strings.TrimSpace(model))
+	if info == nil {
+		info = registry.LookupModelInfo(baseModel)
+	}
+	return info != nil && info.Type == registry.OpenAIImageModelType
+}
+
 func isSupportedImagesModel(model string) bool {
 	if isCodexImagesToolModel(model) {
 		return true
 	}
-	return isXAIImagesModel(model) || isOpenAICompatImagesModel(model)
+	return isXAIImagesModel(model) || isGeminiChatImageModel(model) || isOpenAICompatImagesModel(model)
 }
 
 func isCodexImagesToolModel(model string) bool {
@@ -347,7 +362,7 @@ func rejectUnsupportedImagesModel(c *gin.Context, model string) bool {
 
 	c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
 		Error: handlers.ErrorDetail{
-			Message: fmt.Sprintf("Model %s is not supported on %s or %s. Use %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, or a configured openai-compatibility image model.", model, imagesGenerationsPath, imagesEditsPath, gptImage15Model, defaultImagesToolModel, gptImage25FlareModel, gptImage25SunburstModel, gptImage25Model, gptImage26FlareModel, gptImage26SunburstModel, gptImage26Model, defaultXAIImagesModel, xaiImagesQualityModel, xaiImages20Model),
+			Message: fmt.Sprintf("Model %s is not supported on %s or %s. Use %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, or a configured openai-compatibility image model.", model, imagesGenerationsPath, imagesEditsPath, gptImage15Model, defaultImagesToolModel, gptImage25FlareModel, gptImage25SunburstModel, gptImage25Model, gptImage26FlareModel, gptImage26SunburstModel, gptImage26Model, defaultXAIImagesModel, xaiImagesQualityModel, xaiImages20Model, geminiFlashImageModel),
 			Type:    "invalid_request_error",
 		},
 	})
@@ -840,6 +855,16 @@ func (h *OpenAIAPIHandler) ImagesGenerations(c *gin.Context) {
 		h.handleOpenAICompatImages(c, compatReq, imageModel, responseFormat, "image_generation", stream)
 		return
 	}
+	if isGeminiChatImageModel(imageModel) {
+		n := int(ojson.GetBytesNoCopy(rawJSON, "n").Int())
+		if n <= 0 {
+			n = 1
+		}
+		size := strings.TrimSpace(ojson.GetBytesNoCopy(rawJSON, "size").String())
+		chatReq := buildGeminiChatImagesRequest(prompt, imageModel, size)
+		h.collectGeminiChatImages(c, chatReq, imageModel, responseFormat, n)
+		return
+	}
 
 	toolDoc := ojson.NewDoc([]byte(`{"type":"image_generation","action":"generate"}`))
 	_ = toolDoc.Set("model", imageModel)
@@ -1014,6 +1039,16 @@ func (h *OpenAIAPIHandler) imagesEditsFromMultipart(c *gin.Context) {
 		h.handleOpenAICompatImages(c, compatReq, imageModel, responseFormat, "image_edit", stream)
 		return
 	}
+	if isGeminiChatImageModel(imageModel) {
+		size := c.PostForm("size")
+		n := parseIntField(c.PostForm("n"), 1)
+		if n <= 0 {
+			n = 1
+		}
+		chatReq := buildGeminiChatImagesEditRequest(prompt, imageModel, size, images)
+		h.collectGeminiChatImages(c, chatReq, imageModel, responseFormat, int(n))
+		return
+	}
 
 	var maskDataURL *string
 	if maskFiles := form.File["mask"]; len(maskFiles) > 0 && maskFiles[0] != nil {
@@ -1143,6 +1178,26 @@ func (h *OpenAIAPIHandler) imagesEditsFromJSON(c *gin.Context) {
 	if isOpenAICompatImagesModel(imageModel) {
 		compatReq := buildOpenAICompatImagesJSONRequest(rawJSON, imageModel, stream)
 		h.handleOpenAICompatImages(c, compatReq, imageModel, responseFormat, "image_edit", stream)
+		return
+	}
+	if isGeminiChatImageModel(imageModel) {
+		images := collectXAIImagesFromJSON(rawJSON)
+		if len(images) == 0 {
+			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
+				Error: handlers.ErrorDetail{
+					Message: "Invalid request: image is required",
+					Type:    "invalid_request_error",
+				},
+			})
+			return
+		}
+		size := strings.TrimSpace(ojson.GetBytesNoCopy(rawJSON, "size").String())
+		n := int(ojson.GetBytesNoCopy(rawJSON, "n").Int())
+		if n <= 0 {
+			n = 1
+		}
+		chatReq := buildGeminiChatImagesEditRequest(prompt, imageModel, size, images)
+		h.collectGeminiChatImages(c, chatReq, imageModel, responseFormat, n)
 		return
 	}
 
@@ -1984,6 +2039,12 @@ func buildImagesAPIResponse(results []imageCallResult, createdAt int64, usageRaw
 		if img.RevisedPrompt != "" {
 			_ = itemDoc.Set("revised_prompt", img.RevisedPrompt)
 		}
+		outputFmt := img.OutputFormat
+		if outputFmt == "" {
+			outputFmt = "png"
+		}
+		_ = itemDoc.Set("output_format", outputFmt)
+		_ = itemDoc.Set("mime_type", mimeTypeFromOutputFormat(outputFmt))
 		_ = outDoc.SetRawBytes("data.-1", itemDoc.Bytes())
 	}
 

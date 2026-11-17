@@ -17,6 +17,7 @@ const (
 	AttributeAuthKind             = "auth_kind"
 	AttributeCodexAlphaSearch     = "codex_alpha_search"
 	AttributeCodexDisableCloaking = "codex_disable_cloaking"
+	AttributeCodexInstructionRole = "codex_instruction_role"
 	AttributeConfigIndex          = "config_index"
 	AttributePath                 = "path"
 	AttributeRuntimeOnly          = "runtime_only"

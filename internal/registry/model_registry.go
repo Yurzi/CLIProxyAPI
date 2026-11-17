@@ -20,6 +20,27 @@ import (
 // OpenAIImageModelType marks models that are callable through OpenAI-compatible image endpoints.
 const OpenAIImageModelType = "openai-image"
 
+// OpenAIEmbeddingModelType marks models that are callable through the OpenAI-compatible embeddings endpoint.
+const OpenAIEmbeddingModelType = "openai-embedding"
+
+// OpenAIRerankModelType marks models that are callable through the rerank endpoint.
+const OpenAIRerankModelType = "openai-rerank"
+
+// OpenAITranscriptionModelType marks models that are callable through the OpenAI-compatible
+// audio transcription and translation endpoints.
+const OpenAITranscriptionModelType = "openai-transcription"
+
+// IsEndpointOnlyModelType reports model types served only by dedicated endpoints
+// (images, embeddings, rerank, audio transcription) rather than chat-style endpoints.
+func IsEndpointOnlyModelType(modelType string) bool {
+	switch modelType {
+	case OpenAIImageModelType, OpenAIEmbeddingModelType, OpenAIRerankModelType, OpenAITranscriptionModelType:
+		return true
+	default:
+		return false
+	}
+}
+
 const (
 	DefaultClaudeMaxInputTokens  = 200000
 	DefaultClaudeMaxOutputTokens = 64000
@@ -2231,9 +2252,10 @@ func (r *ModelRegistry) GetFirstAvailableModel(handlerType string) (string, erro
 		return models[i].ID < models[j].ID
 	})
 
-	// Find the first model with available clients
+	// Find the first model with available clients. Endpoint-only models (images,
+	// embeddings, rerank, transcription) cannot serve chat-style requests.
 	for _, model := range models {
-		if model.ID == "" {
+		if model.ID == "" || IsEndpointOnlyModelType(model.Type) {
 			continue
 		}
 		if count := r.GetModelCount(model.ID); count > 0 {

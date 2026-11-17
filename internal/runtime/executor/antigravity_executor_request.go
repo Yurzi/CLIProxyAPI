@@ -1136,6 +1136,10 @@ func geminiToAntigravityDocForAuth(doc *ojson.Doc, selection cliproxyauth.Antigr
 		_ = doc.SetRawBytes("request.toolConfig", []byte(toolConfig.Raw))
 		_ = doc.Delete("toolConfig")
 	}
+	if toolConfig := doc.Get("tool_config"); toolConfig.Exists() && !doc.Get("request.toolConfig").Exists() && !doc.Get("request.tool_config").Exists() {
+		_ = doc.SetRawBytes("request.toolConfig", []byte(toolConfig.Raw))
+		_ = doc.Delete("tool_config")
+	}
 	return !isImageModel && reqType == "agent"
 }
 

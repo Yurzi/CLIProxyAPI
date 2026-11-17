@@ -149,6 +149,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	if errSession != nil {
 		return resp, errSession
 	}
+	applyCodexInstructionRoleDoc(doc, auth)
 	helps.FinalizePayloadDoc(ctx, doc)
 	body = doc.Bytes()
 	if errMarker := helps.ValidateCodexSessionInstructionMarker(body, from); errMarker != nil {

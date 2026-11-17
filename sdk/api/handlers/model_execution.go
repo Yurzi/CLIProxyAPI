@@ -30,7 +30,9 @@ type modelExecutionOptions struct {
 	Path                    string
 	CallerScope             string
 	AllowSpeechModel        bool
-	homeLocalExecutor       *homeLocalExecution
+	// KeepContentType reports the upstream Content-Type even without header passthrough.
+	KeepContentType   bool
+	homeLocalExecutor *homeLocalExecution
 }
 
 // ProtocolExecutionRequest describes a route-level model execution request with explicit protocols.
