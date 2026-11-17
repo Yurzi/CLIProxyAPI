@@ -15,6 +15,10 @@ func TestRequestToFormatKeepsMediaSources(t *testing.T) {
 		{source: "openai-image", want: "openai-image"},
 		{source: "openai-video", want: "openai-video"},
 		{source: "openai-speech", want: "openai-speech"},
+		{source: "openai-embedding", want: "openai-embedding"},
+		{source: "openai-rerank", want: "openai-rerank"},
+		{source: "openai-transcription", want: "openai-transcription"},
+		{source: "openai-translation", want: "openai-translation"},
 	}
 	for _, tt := range cases {
 		t.Run(tt.source, func(t *testing.T) {

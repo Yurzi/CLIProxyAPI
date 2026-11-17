@@ -58,6 +58,7 @@ func isResponsesWebSearchToolType(toolType string) bool {
 }
 
 // HasResponsesWebSearchTool checks if the request tools array contains an OpenAI web search tool.
+// external_web_access is ignored because Google Search has no equivalent cache-only mode.
 func HasResponsesWebSearchTool(root ojson.Result) bool {
 	tools := root.Get("tools")
 	if !tools.IsArray() {

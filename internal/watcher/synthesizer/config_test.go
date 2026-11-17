@@ -336,6 +336,7 @@ func TestConfigSynthesizer_CodexKeys(t *testing.T) {
 					AlphaSearch:          true,
 					DisableCooling:       boolPointer(true),
 					DisableCodexCloaking: boolPointer(true),
+					InstructionRole:      " System ",
 				},
 			},
 		},
@@ -369,6 +370,9 @@ func TestConfigSynthesizer_CodexKeys(t *testing.T) {
 	if auths[0].Attributes[coreauth.AttributeCodexDisableCloaking] != "true" {
 		t.Errorf("expected codex_disable_cloaking=true, got %s", auths[0].Attributes[coreauth.AttributeCodexDisableCloaking])
 	}
+	if auths[0].Attributes[coreauth.AttributeCodexInstructionRole] != "system" {
+		t.Errorf("expected codex_instruction_role=system, got %s", auths[0].Attributes[coreauth.AttributeCodexInstructionRole])
+	}
 	if v, ok := auths[0].Metadata["disable_cooling"].(bool); !ok || !v {
 		t.Errorf("expected disable_cooling=true, got %v", auths[0].Metadata["disable_cooling"])
 	}
@@ -379,15 +383,16 @@ func TestConfigSynthesizer_XAIKeys(t *testing.T) {
 	ctx := &SynthesisContext{
 		Config: &config.Config{
 			XAIKey: []config.XAIKey{{
-				APIKey:         "xai-key-123",
-				Prefix:         "grok",
-				BaseURL:        "https://api.x.ai/v1",
-				ProxyURL:       "http://proxy.local",
-				Websockets:     true,
-				AlphaSearch:    true,
-				DisableCooling: boolPointer(true),
-				Headers:        map[string]string{"X-Custom": "value"},
-				Models:         []config.XAIModel{{Name: "grok-4.5", Alias: "grok-latest"}},
+				APIKey:          "xai-key-123",
+				Prefix:          "grok",
+				BaseURL:         "https://api.x.ai/v1",
+				ProxyURL:        "http://proxy.local",
+				Websockets:      true,
+				AlphaSearch:     true,
+				DisableCooling:  boolPointer(true),
+				Headers:         map[string]string{"X-Custom": "value"},
+				Models:          []config.XAIModel{{Name: "grok-4.5", Alias: "grok-latest"}},
+				InstructionRole: "system",
 			}},
 		},
 		Now:         time.Now(),
@@ -413,6 +418,9 @@ func TestConfigSynthesizer_XAIKeys(t *testing.T) {
 	}
 	if _, exists := auth.Attributes[coreauth.AttributeCodexAlphaSearch]; exists {
 		t.Fatal("xAI auth unexpectedly contains codex_alpha_search")
+	}
+	if _, exists := auth.Attributes[coreauth.AttributeCodexInstructionRole]; exists {
+		t.Fatal("xAI auth unexpectedly contains codex_instruction_role")
 	}
 	if auth.Attributes["base_url"] != "https://api.x.ai/v1" {
 		t.Fatalf("base_url = %q, want https://api.x.ai/v1", auth.Attributes["base_url"])

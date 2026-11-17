@@ -5340,3 +5340,52 @@ func TestConvertOpenAIResponsesRequestToGemini_MixedWebSearchAndFunctions(t *tes
 		t.Fatalf("includeServerSideToolInvocations must not be set when googleSearch is suppressed by tool_choice=none, got: %s", choiceNoneOut)
 	}
 }
+
+func TestConvertOpenAIResponsesRequestToGemini_IgnoresExternalWebAccess(t *testing.T) {
+	modelID := "gemini-external-web-access"
+	registerTestWebSearchModel(t, "client-external-web-access", "gemini", modelID, true)
+	for _, toolType := range []string{"web_search", "web_search_2025_08_26", "web_search_preview", "web_search_preview_2025_03_11"} {
+		for _, access := range []struct {
+			name, field string
+		}{
+			{"omitted", ""},
+			{"true", `,"external_web_access":true`},
+			{"false", `,"external_web_access":false`},
+		} {
+			for _, tc := range []struct {
+				name, extraTool, toolChoice string
+				wantSearch, wantFunction    bool
+			}{
+				{"search_only", "", "auto", true, false},
+				{"mixed", `,{"type":"function","name":"save_release","parameters":{"type":"object"}}`, "auto", true, true},
+				{"choice_none", `,{"type":"function","name":"save_release","parameters":{"type":"object"}}`, "none", false, true},
+			} {
+				t.Run(toolType+"/"+access.name+"/"+tc.name, func(t *testing.T) {
+					input := []byte(`{"model":"` + modelID + `","input":"latest Go release","tools":[{"type":"` + toolType + `"` + access.field + `}` + tc.extraTool + `],"tool_choice":"` + tc.toolChoice + `"}`)
+					root := ojson.ParseBytes(input)
+					if !HasResponsesWebSearchTool(root) || HasOnlyResponsesWebSearchTools(root) != !tc.wantFunction {
+						t.Fatalf("external_web_access must not affect search tool detection: %s", input)
+					}
+					output, err := ConvertOpenAIResponsesRequestToGemini(modelID, input, false)
+					if err != nil {
+						t.Fatalf("convert error: %v", err)
+					}
+					hasSearch, hasFunction := false, false
+					for _, tool := range ojson.GetBytesNoCopy(output, "tools").Array() {
+						hasSearch = hasSearch || tool.Get("googleSearch").Exists()
+						hasFunction = hasFunction || tool.Get("functionDeclarations.0.name").String() == "save_release"
+					}
+					if hasSearch != tc.wantSearch || hasFunction != tc.wantFunction {
+						t.Fatalf("search=%v, function=%v; want search=%v, function=%v: %s", hasSearch, hasFunction, tc.wantSearch, tc.wantFunction, output)
+					}
+					if got := ojson.GetBytesNoCopy(output, "toolConfig.includeServerSideToolInvocations").Bool(); got != (tc.wantSearch && tc.wantFunction) {
+						t.Fatalf("unexpected mixed-tool configuration: %s", output)
+					}
+					if ojson.GetBytesNoCopy(output, "tools.0.external_web_access").Exists() {
+						t.Fatalf("external_web_access must not be forwarded to Gemini: %s", output)
+					}
+				})
+			}
+		}
+	}
+}

@@ -1006,6 +1006,7 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 	if errSession != nil {
 		return nil, errSession
 	}
+	applyCodexInstructionRoleDoc(doc, auth)
 	helps.FinalizePayloadDoc(ctx, doc)
 	body = doc.Bytes()
 	if errMarker := helps.ValidateCodexSessionInstructionMarker(body, from); errMarker != nil {

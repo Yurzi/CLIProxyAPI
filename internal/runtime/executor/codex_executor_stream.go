@@ -126,6 +126,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	if errSession != nil {
 		return nil, errSession
 	}
+	applyCodexInstructionRoleDoc(doc, auth)
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
 	httpReq, upstreamBody, err := e.cacheHelperDoc(ctx, from, url, req, doc, auth, opts.Headers)
 	if err != nil {

@@ -387,7 +387,7 @@ func applyCodexClientBaseInstructions(entry map[string]any, model map[string]any
 }
 
 func applyCodexClientModelCapabilities(entry map[string]any, id, metadataID string, info *registry.ModelInfo, providersForModel ProvidersForModelFunc, clientVersion string) {
-	if info != nil && info.Type == registry.OpenAIImageModelType {
+	if info != nil && registry.IsEndpointOnlyModelType(info.Type) {
 		entry["visibility"] = "hide"
 		delete(entry, "input_modalities")
 		delete(entry, "supports_image_detail_original")
@@ -681,7 +681,7 @@ func applyCodexClientModelMetadata(entry map[string]any, id string, model map[st
 			thinkingSupport = info.Thinking
 		}
 	}
-	if info != nil && info.Type == registry.OpenAIImageModelType {
+	if info != nil && registry.IsEndpointOnlyModelType(info.Type) {
 		entry["visibility"] = "hide"
 		delete(entry, "input_modalities")
 		delete(entry, "supports_image_detail_original")

@@ -947,6 +947,33 @@ type CodexKey struct {
 
 	// RequestScopedErrors configures custom classification rules for upstream errors.
 	RequestScopedErrors []RequestScopedErrorRule `yaml:"request-scoped-errors,omitempty" json:"request-scoped-errors,omitempty"`
+
+	// InstructionRole selects the role sent upstream for input messages whose role is
+	// "system" or "developer". "developer" rewrites both to developer. "system" targets
+	// Responses-compatible upstreams that reject the developer role and accept only one
+	// system message at the beginning: leading system/developer messages and a non-empty
+	// instructions value are merged into one leading system message, and later ones are
+	// sent as user messages wrapped in <system-reminder>.
+	// Empty keeps the built-in Codex behavior (system is converted to developer).
+	// Only Codex API keys use this field.
+	InstructionRole string `yaml:"instruction-role,omitempty" json:"instruction-role,omitempty"`
+}
+
+// Supported CodexKey.InstructionRole values.
+const (
+	CodexInstructionRoleDeveloper = "developer"
+	CodexInstructionRoleSystem    = "system"
+)
+
+// NormalizeCodexInstructionRole returns the canonical instruction role, or "" for
+// empty and unsupported values.
+func NormalizeCodexInstructionRole(value string) string {
+	switch role := strings.ToLower(strings.TrimSpace(value)); role {
+	case CodexInstructionRoleDeveloper, CodexInstructionRoleSystem:
+		return role
+	default:
+		return ""
+	}
 }
 
 func (k CodexKey) GetAPIKey() string { return k.APIKey }
@@ -1192,6 +1219,16 @@ type OpenAICompatibilityModel struct {
 	// Image marks this model as callable through /v1/images/generations and /v1/images/edits.
 	Image bool `yaml:"image,omitempty" json:"image,omitempty"`
 
+	// Embedding marks this model as callable through /v1/embeddings.
+	Embedding bool `yaml:"embedding,omitempty" json:"embedding,omitempty"`
+
+	// Rerank marks this model as callable through /v1/rerank.
+	Rerank bool `yaml:"rerank,omitempty" json:"rerank,omitempty"`
+
+	// Transcription marks this model as callable through /v1/audio/transcriptions
+	// and /v1/audio/translations (e.g. whisper-1).
+	Transcription bool `yaml:"transcription,omitempty" json:"transcription,omitempty"`
+
 	// InputModalities declares chat/responses input capabilities (e.g. text, image) for Codex and other clients.
 	// This is separate from Image, which only enables /v1/images/* endpoints.
 	InputModalities []string `yaml:"input-modalities,omitempty" json:"input-modalities,omitempty"`
@@ -1213,6 +1250,23 @@ type OpenAICompatibilityModel struct {
 }
 
 func (m OpenAICompatibilityModel) GetName() string { return m.Name }
+
+// EndpointModelType returns the registry model type for endpoint-only models
+// (image, embedding, rerank, transcription), or an empty string for chat models.
+func (m OpenAICompatibilityModel) EndpointModelType() string {
+	switch {
+	case m.Image:
+		return registry.OpenAIImageModelType
+	case m.Embedding:
+		return registry.OpenAIEmbeddingModelType
+	case m.Rerank:
+		return registry.OpenAIRerankModelType
+	case m.Transcription:
+		return registry.OpenAITranscriptionModelType
+	default:
+		return ""
+	}
+}
 
 func (m OpenAICompatibilityModel) GetAlias() string { return m.Alias }
 

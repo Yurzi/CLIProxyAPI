@@ -1873,3 +1873,56 @@ func TestConvertOpenAIResponsesRequestToAntigravity_TopLevelMedia(t *testing.T) 
 		t.Errorf("expected audio inline part in output: %s", out)
 	}
 }
+
+func TestConvertOpenAIResponsesRequestToAntigravity_IgnoresExternalWebAccess(t *testing.T) {
+	modelID := "ag-external-web-access"
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient("client-ag-external-web-access", "antigravity", []*registry.ModelInfo{
+		{ID: modelID, SupportsWebSearch: true},
+	})
+	t.Cleanup(func() { reg.UnregisterClient("client-ag-external-web-access") })
+	for _, access := range []struct {
+		name, field string
+	}{
+		{"omitted", ""},
+		{"true", `,"external_web_access":true`},
+		{"false", `,"external_web_access":false`},
+	} {
+		for _, tc := range []struct {
+			name, input, extraTool, toolChoice string
+			wantSearch, wantFunction           bool
+		}{
+			{"search_only", `"latest Go release"`, "", "auto", true, false},
+			{"mixed", `"latest Go release"`, `,{"type":"function","name":"save_release","parameters":{"type":"object"}}`, "auto", false, true},
+			{"additional_tools", `[{"type":"additional_tools","tools":[{"type":"function","name":"save_release","parameters":{"type":"object"}}]},{"role":"user","content":"latest Go release"}]`, "", "auto", true, true},
+			{"choice_none", `"latest Go release"`, "", "none", false, false},
+		} {
+			t.Run(access.name+"/"+tc.name, func(t *testing.T) {
+				input := []byte(`{"model":"` + modelID + `","input":` + tc.input + `,"tools":[{"type":"web_search"` + access.field + `}` + tc.extraTool + `],"tool_choice":"` + tc.toolChoice + `"}`)
+				output, err := ConvertOpenAIResponsesRequestToAntigravity(modelID, input, false)
+				if err != nil {
+					t.Fatalf("convert error: %v", err)
+				}
+				if got := ojson.GetBytesNoCopy(output, "requestType").String() == "web_search"; got != tc.wantSearch {
+					t.Fatalf("web_search envelope=%v, want %v: %s", got, tc.wantSearch, output)
+				}
+				hasSearch, hasFunction := false, false
+				for _, tool := range ojson.GetBytesNoCopy(output, "request.tools").Array() {
+					hasSearch = hasSearch || tool.Get("googleSearch").Exists()
+					hasFunction = hasFunction || tool.Get("functionDeclarations.0.name").String() == "save_release"
+					if tool.Get("external_web_access").Exists() {
+						t.Fatalf("external_web_access must not be forwarded to Antigravity: %s", output)
+					}
+				}
+				if hasSearch != tc.wantSearch || hasFunction != tc.wantFunction {
+					t.Fatalf("search=%v, function=%v; want search=%v, function=%v: %s", hasSearch, hasFunction, tc.wantSearch, tc.wantFunction, output)
+				}
+				for _, path := range []string{"toolConfig.includeServerSideToolInvocations", "request.toolConfig.includeServerSideToolInvocations"} {
+					if ojson.GetBytesNoCopy(output, path).Exists() {
+						t.Fatalf("Antigravity must not carry %s: %s", path, output)
+					}
+				}
+			})
+		}
+	}
+}

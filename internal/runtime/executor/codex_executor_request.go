@@ -358,6 +358,14 @@ func doCodexRequest(client *http.Client, req *http.Request, upstreamBody []byte,
 	return resp, nil
 }
 
+// applyCodexInstructionRoleDoc runs after built-in normalization and before
+// payload configuration, preserving the final semantic barrier.
+func applyCodexInstructionRoleDoc(doc *ojson.Doc, auth *cliproxyauth.Auth) {
+	if auth != nil {
+		helps.RewriteCodexInstructionRoleDoc(doc, auth.Attributes[cliproxyauth.AttributeCodexInstructionRole])
+	}
+}
+
 func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, stream bool, cfg *config.Config, clientHeaders ...http.Header) {
 	var ginHeaders http.Header
 	if len(clientHeaders) > 0 && clientHeaders[0] != nil {

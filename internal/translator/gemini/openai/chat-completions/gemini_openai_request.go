@@ -89,33 +89,7 @@ func convertOpenAIRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 	// Map OpenAI response_format to Gemini structured output settings.
 	applyOpenAIResponseFormatToGeminiDoc(outDoc, rawJSON)
 
-	// Map OpenAI modalities -> Gemini generationConfig.responseModalities
-	// e.g. "modalities": ["image", "text"] -> ["IMAGE", "TEXT"]
-	if mods := ojson.GetBytesNoCopy(rawJSON, "modalities"); mods.Exists() && mods.IsArray() {
-		var responseMods []string
-		for _, m := range mods.Array() {
-			switch strings.ToLower(m.String()) {
-			case "text":
-				responseMods = append(responseMods, "TEXT")
-			case "image":
-				responseMods = append(responseMods, "IMAGE")
-			}
-		}
-		if len(responseMods) > 0 {
-			_ = outDoc.Set("generationConfig.responseModalities", responseMods)
-		}
-	}
-
-	// OpenRouter-style image_config support
-	// If the input uses top-level image_config.aspect_ratio, map it into generationConfig.imageConfig.aspectRatio.
-	if imgCfg := ojson.GetBytesNoCopy(rawJSON, "image_config"); imgCfg.Exists() && imgCfg.IsObject() {
-		if ar := imgCfg.Get("aspect_ratio"); ar.Exists() && ar.Type == ojson.String {
-			_ = outDoc.Set("generationConfig.imageConfig.aspectRatio", ar.Str)
-		}
-		if size := imgCfg.Get("image_size"); size.Exists() && size.Type == ojson.String {
-			_ = outDoc.Set("generationConfig.imageConfig.imageSize", size.Str)
-		}
-	}
+	translatorcommon.ApplyGeminiImageConfig(outDoc, ojson.ParseBytes(rawJSON), "generationConfig")
 
 	// messages -> systemInstruction + contents
 	messages := ojson.GetBytesNoCopy(rawJSON, "messages")
@@ -492,6 +466,8 @@ func convertOpenAIRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 		}
 
 		switch toolChoiceType {
+		case "image_generation":
+			// Image generation tool choice does not configure functionCallingConfig.
 		case "auto":
 			if hasStrictTool {
 				_ = outDoc.Set("toolConfig.functionCallingConfig.mode", "VALIDATED")

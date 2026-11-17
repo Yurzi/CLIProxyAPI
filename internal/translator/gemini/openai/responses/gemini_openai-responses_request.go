@@ -512,6 +512,8 @@ func convertOpenAIResponsesRequestToGemini(modelName string, inputRawJSON []byte
 
 	applyOpenAIResponsesTextFormatToGeminiDoc(outDoc, root)
 
+	translatorcommon.ApplyGeminiImageConfig(outDoc, root, "generationConfig")
+
 	// Apply thinking configuration: convert OpenAI Responses API reasoning.effort to Gemini thinkingConfig.
 	// Inline translation-only mapping; capability checks happen later in ApplyThinking.
 	re := root.Get("reasoning.effort")
