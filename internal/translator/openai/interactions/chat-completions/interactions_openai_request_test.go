@@ -262,3 +262,38 @@ func TestConvertOpenAIRequestToInteractionsRenamesConflictingToolChoice(t *testi
 		t.Fatalf("gemini tool_choice.function.name = %q, want read_file (no rename). Output: %s", got, string(outNonAnti))
 	}
 }
+
+func TestOpenAIInteractionsImageConfigAndResponseImages(t *testing.T) {
+	req := []byte(`{
+		"model":"gemini-nano-banana-2.1",
+		"messages":[{"role":"user","content":"draw a cat"}],
+		"modalities":["image","text"],
+		"image_config":{"aspect_ratio":"16:9","image_size":"2K"}
+	}`)
+	out, err := ConvertOpenAIRequestToInteractions("gemini-nano-banana-2.1", req, false)
+	if err != nil {
+		t.Fatalf("ConvertOpenAIRequestToInteractions() error = %v", err)
+	}
+	if ojson.GetBytesNoCopy(out, "response_modalities").Exists() {
+		t.Fatalf("legacy response_modalities should not be emitted: %s", string(out))
+	}
+	formats := ojson.GetBytesNoCopy(out, "response_format").Array()
+	if len(formats) != 2 || formats[0].Get("type").String() != "image" || formats[0].Get("aspect_ratio").String() != "16:9" || formats[0].Get("image_size").String() != "2K" || formats[1].Get("type").String() != "text" {
+		t.Fatalf("response_format = %s", ojson.GetBytesNoCopy(out, "response_format").Raw)
+	}
+
+	upstream := []byte(`{
+		"id":"i_1",
+		"model":"gemini-nano-banana-2.1",
+		"status":"completed",
+		"steps":[
+			{"type":"thought","content":[{"type":"image","mime_type":"image/png","data":"draft"}]},
+			{"type":"model_output","content":[{"type":"image","mime_type":"image/png","data":"finalimg"}]}
+		]
+	}`)
+	chatResp := ConvertInteractionsResponseToOpenAINonStream(nil, "gemini-nano-banana-2.1", nil, nil, upstream, nil)
+	imgs := ojson.GetBytesNoCopy(chatResp, "choices.0.message.images").Array()
+	if len(imgs) != 1 || imgs[0].Get("image_url.url").String() != "data:image/png;base64,finalimg" {
+		t.Fatalf("choices.0.message.images = %s", string(chatResp))
+	}
+}

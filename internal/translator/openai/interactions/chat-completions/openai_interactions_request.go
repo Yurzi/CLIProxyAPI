@@ -293,7 +293,7 @@ func copyOpenAIChatGenerationConfigToInteractionsDoc(outDoc *ojson.Doc, root ojs
 			_ = outDoc.SetRaw("generation_config.stop_sequences", stop.Raw)
 		}
 	}
-	if toolChoice := root.Get("tool_choice"); toolChoice.Exists() {
+	if toolChoice := root.Get("tool_choice"); toolChoice.Exists() && !isOpenAIChatImageGenerationToolChoice(toolChoice) {
 		if isAntigravityModel(model) && toolChoice.IsObject() {
 			tcRaw := []byte(toolChoice.Raw)
 			if fnName := toolChoice.Get("function.name").String(); fnName != "" {
@@ -312,11 +312,140 @@ func copyOpenAIChatGenerationConfigToInteractionsDoc(outDoc *ojson.Doc, root ojs
 	if responseFormat := root.Get("response_format"); responseFormat.Exists() {
 		_ = outDoc.SetRaw("response_format", responseFormat.Raw)
 	}
-	if modalities := root.Get("modalities"); modalities.Exists() {
-		_ = outDoc.SetRaw("response_modalities", modalities.Raw)
-	}
+	applyOpenAIChatImageFormatToInteractionsDoc(outDoc, root)
 	if serviceTier := root.Get("service_tier"); serviceTier.Exists() && serviceTier.Type == ojson.String {
 		_ = outDoc.Set("service_tier", serviceTier.String())
+	}
+}
+
+func isOpenAIChatImageGenerationToolChoice(toolChoice ojson.Result) bool {
+	if toolChoice.Type == ojson.String {
+		return strings.EqualFold(strings.TrimSpace(toolChoice.String()), "image_generation")
+	}
+	return toolChoice.IsObject() && strings.EqualFold(strings.TrimSpace(toolChoice.Get("type").String()), "image_generation")
+}
+
+func applyOpenAIChatImageFormatToInteractionsDoc(outDoc *ojson.Doc, root ojson.Result) {
+	if outDoc == nil {
+		return
+	}
+	var modalities []string
+	seenModalities := make(map[string]bool)
+	if mods := root.Get("modalities"); mods.Exists() && mods.IsArray() {
+		mods.ForEach(func(_, mod ojson.Result) bool {
+			normalized := strings.ToLower(strings.TrimSpace(mod.String()))
+			if normalized == "" || seenModalities[normalized] {
+				return true
+			}
+			seenModalities[normalized] = true
+			modalities = append(modalities, normalized)
+			return true
+		})
+	}
+
+	imageOpts := make(map[string]string)
+	firstOpt := func(v ojson.Result, paths ...string) string {
+		for _, path := range paths {
+			if s := strings.TrimSpace(v.Get(path).String()); s != "" {
+				return s
+			}
+		}
+		return ""
+	}
+	hasExplicitImageSize := false
+	if cfg := root.Get("image_config"); cfg.IsObject() {
+		if ar := translatorcommon.GeminiImageAspectRatio(firstOpt(cfg, "aspect_ratio", "aspectRatio")); ar != "" {
+			imageOpts["aspect_ratio"] = ar
+		}
+		if sz := translatorcommon.GeminiImageSizeFromOptions(
+			firstOpt(cfg, "image_size", "imageSize"),
+			firstOpt(cfg, "resolution"),
+			firstOpt(cfg, "size"),
+		); sz != "" {
+			imageOpts["image_size"] = sz
+			hasExplicitImageSize = true
+		} else if rawSz := firstOpt(cfg, "image_size", "imageSize"); rawSz != "" {
+			imageOpts["image_size"] = rawSz
+			hasExplicitImageSize = true
+		}
+	}
+
+	hasImageGeneration := false
+	applyTool := func(tool ojson.Result) {
+		hasImageGeneration = true
+		ratio := translatorcommon.GeminiImageAspectRatio(firstOpt(tool, "aspect_ratio", "aspectRatio", "image_generation.aspect_ratio", "image_generation.aspectRatio", "image_config.aspect_ratio", "image_config.aspectRatio"))
+		sizeOpt := firstOpt(tool, "size", "image_generation.size", "image_config.size")
+		if ratio == "" {
+			ratio = translatorcommon.GeminiImageAspectRatioFromSize(firstOpt(tool, "size", "image_generation.size", "image_generation.image_size", "image_generation.imageSize", "image_config.size", "image_config.image_size", "image_config.imageSize"))
+		}
+		if ratio != "" {
+			imageOpts["aspect_ratio"] = ratio
+		}
+		if !hasExplicitImageSize {
+			if sz := translatorcommon.GeminiImageSizeFromOptions(
+				firstOpt(tool, "image_size", "imageSize", "image_generation.image_size", "image_generation.imageSize", "image_config.image_size", "image_config.imageSize"),
+				firstOpt(tool, "resolution", "image_generation.resolution", "image_config.resolution"),
+				sizeOpt,
+			); sz != "" {
+				imageOpts["image_size"] = sz
+			}
+		}
+	}
+	if tools := root.Get("tools"); tools.IsArray() {
+		tools.ForEach(func(_, tool ojson.Result) bool {
+			if strings.EqualFold(strings.TrimSpace(tool.Get("type").String()), "image_generation") {
+				applyTool(tool)
+			}
+			return true
+		})
+	}
+	if tc := root.Get("tool_choice"); isOpenAIChatImageGenerationToolChoice(tc) {
+		if tc.IsObject() {
+			applyTool(tc)
+		} else {
+			hasImageGeneration = true
+		}
+	}
+	if hasImageGeneration {
+		for _, reqMod := range []string{"image", "text"} {
+			if !seenModalities[reqMod] {
+				seenModalities[reqMod] = true
+				modalities = append(modalities, reqMod)
+			}
+		}
+	}
+	if len(modalities) == 0 && len(imageOpts) == 0 {
+		return
+	}
+	buildImageEntry := func() []byte {
+		entryDoc := ojson.NewDocString(`{"type":"image"}`)
+		if ar := imageOpts["aspect_ratio"]; ar != "" {
+			_ = entryDoc.Set("aspect_ratio", ar)
+		}
+		if sz := imageOpts["image_size"]; sz != "" {
+			_ = entryDoc.Set("image_size", sz)
+		}
+		return entryDoc.Bytes()
+	}
+	var entries [][]byte
+	addedImage := false
+	for _, mod := range modalities {
+		if mod == "image" {
+			entries = append(entries, buildImageEntry())
+			addedImage = true
+			continue
+		}
+		entryDoc := ojson.NewDocString(`{"type":""}`)
+		_ = entryDoc.Set("type", mod)
+		entries = append(entries, entryDoc.Bytes())
+	}
+	if len(imageOpts) > 0 && !addedImage {
+		entries = append(entries, buildImageEntry())
+	}
+	if len(entries) == 1 {
+		_ = outDoc.SetRawBytes("response_format", entries[0])
+	} else if len(entries) > 1 {
+		translatorcommon.SetRawArrayItemsDoc(outDoc, "response_format", entries)
 	}
 }
 

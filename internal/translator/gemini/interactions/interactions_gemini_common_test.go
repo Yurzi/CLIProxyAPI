@@ -2936,3 +2936,72 @@ func TestConvertInteractionsResponseToGemini_SynthesizedTotalTokenCountIncludesT
 		})
 	}
 }
+
+func TestConvertGeminiRequestToInteractions_CoalescesMultimodalUserTurnAndImageOutputs(t *testing.T) {
+	inputJSON := []byte(`{
+		"contents":[{"role":"user","parts":[
+			{"inlineData":{"mimeType":"image/png","data":"AA=="}},
+			{"text":"edit this image"}
+		]}],
+		"generationConfig":{
+			"responseModalities":["IMAGE"],
+			"imageConfig":{"aspectRatio":"16:9","imageSize":"2K"}
+		}
+	}`)
+	out, err := ConvertGeminiRequestToInteractions("gemini-nano-banana-2.1", inputJSON, false)
+	if err != nil {
+		t.Fatalf("ConvertGeminiRequestToInteractions() error = %v", err)
+	}
+	steps := ojson.GetBytesNoCopy(out, "input").Array()
+	if len(steps) != 1 {
+		t.Fatalf("input step count = %d, want 1; out=%s", len(steps), string(out))
+	}
+	if steps[0].Get("type").String() != "user_input" {
+		t.Fatalf("input.0.type = %q, want user_input", steps[0].Get("type").String())
+	}
+	content := steps[0].Get("content").Array()
+	if len(content) != 2 || content[0].Get("type").String() != "image" || content[1].Get("type").String() != "text" {
+		t.Fatalf("input.0.content = %s, want [image, text]", steps[0].Get("content").Raw)
+	}
+	if got := ojson.GetBytesNoCopy(out, "response_format.type").String(); got != "image" {
+		t.Fatalf("response_format.type = %q, want image", got)
+	}
+	if got := ojson.GetBytesNoCopy(out, "response_format.image_size").String(); got != "2K" {
+		t.Fatalf("response_format.image_size = %q, want 2K", got)
+	}
+
+	// Verify thought draft images are marked thought:true and outputs fallback works.
+	respSteps := []byte(`{
+		"id":"i_img",
+		"model":"gemini-nano-banana-2.1",
+		"steps":[
+			{"type":"thought","content":[{"type":"image","mime_type":"image/png","data":"draft"}]},
+			{"type":"model_output","content":[{"type":"image","mime_type":"image/png","data":"final"}]}
+		],
+		"usage":{"input_tokens":5,"output_tokens":10,"total_tokens":15}
+	}`)
+	geminiOut := ConvertInteractionsResponseToGeminiNonStream(context.Background(), "gemini-nano-banana-2.1", nil, nil, respSteps, nil)
+	parts := ojson.GetBytesNoCopy(geminiOut, "candidates.0.content.parts").Array()
+	if len(parts) != 2 {
+		t.Fatalf("parts len = %d, want 2: %s", len(parts), string(geminiOut))
+	}
+	if !parts[0].Get("thought").Bool() || parts[0].Get("inlineData.data").String() != "draft" {
+		t.Fatalf("parts[0] = %s, want thought=true draft inlineData", parts[0].Raw)
+	}
+	if parts[1].Get("thought").Bool() || parts[1].Get("inlineData.data").String() != "final" {
+		t.Fatalf("parts[1] = %s, want non-thought final inlineData", parts[1].Raw)
+	}
+
+	respOutputs := []byte(`{
+		"id":"i_out",
+		"outputs":[
+			{"type":"thought","summary":[{"type":"image","mime_type":"image/png","data":"draft"}]},
+			{"type":"image","mime_type":"image/jpeg","data":"okjpeg"}
+		]
+	}`)
+	geminiFromOutputs := ConvertInteractionsResponseToGeminiNonStream(context.Background(), "gemini-nano-banana-2.1", nil, nil, respOutputs, nil)
+	outParts := ojson.GetBytesNoCopy(geminiFromOutputs, "candidates.0.content.parts").Array()
+	if len(outParts) != 2 || !outParts[0].Get("thought").Bool() || outParts[1].Get("inlineData.data").String() != "okjpeg" {
+		t.Fatalf("outputs fallback parts = %s", string(geminiFromOutputs))
+	}
+}

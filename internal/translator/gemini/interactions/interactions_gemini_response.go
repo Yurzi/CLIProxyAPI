@@ -20,12 +20,14 @@ type interactionsToGeminiStreamState struct {
 	ID                    string
 	Model                 string
 	ServiceTier           string
+	StepTypes             map[int]string
 	StepNames             map[int]string
 	StepIDs               map[int]string
 	StepSignatures        map[int]string
 	PendingFunctionSteps  map[int]string
 	FunctionArguments     map[int]*interactionsGeminiArguments // A nil entry marks an emitted or closed call.
 	BufferedArgumentBytes int
+	EmittedMedia          bool
 }
 
 type interactionsGeminiArguments struct {
@@ -73,10 +75,23 @@ func ConvertInteractionsResponseToGeminiNonStream(_ context.Context, modelName s
 	if !steps.Exists() {
 		steps = root.Get("steps")
 	}
-	steps.ForEach(func(_, step ojson.Result) bool {
-		parts = append(parts, interactionsStepToGeminiParts(step)...)
-		return true
-	})
+	if steps.Exists() && steps.IsArray() {
+		steps.ForEach(func(_, step ojson.Result) bool {
+			parts = append(parts, interactionsStepToGeminiParts(step)...)
+			return true
+		})
+	} else {
+		outputs := interaction.Get("outputs")
+		if !outputs.Exists() {
+			outputs = root.Get("outputs")
+		}
+		if outputs.IsArray() {
+			outputs.ForEach(func(_, output ojson.Result) bool {
+				parts = append(parts, interactionsOutputToGeminiParts(output)...)
+				return true
+			})
+		}
+	}
 	out := buildInteractionsGeminiChunk(st, modelName, parts, mapInteractionsFinishReasonToGemini(root, interaction), translatorcommon.InteractionsUsage(root), true)
 	return out
 }
@@ -138,7 +153,11 @@ func convertInteractionsEventToGemini(modelName string, rawJSON []byte, st *inte
 		st.ID = strings.Clone(firstNonEmptyInteractionString(st.ID, interaction.Get("id").String()))
 		st.Model = strings.Clone(firstNonEmptyInteractionString(st.Model, interaction.Get("model").String(), modelName))
 		st.ServiceTier = strings.Clone(firstNonEmptyInteractionString(st.ServiceTier, interaction.Get("service_tier").String()))
-		chunk := buildInteractionsGeminiChunk(st, modelName, nil, mapInteractionsFinishReasonToGemini(root, interaction), translatorcommon.InteractionsUsage(root), true)
+		var mediaParts [][]byte
+		if !st.EmittedMedia {
+			mediaParts = extractInteractionsCompletedMediaParts(interaction, root)
+		}
+		chunk := buildInteractionsGeminiChunk(st, modelName, mediaParts, mapInteractionsFinishReasonToGemini(root, interaction), translatorcommon.InteractionsUsage(root), true)
 		return [][]byte{chunk}
 	case "response.failed", "interaction.failed":
 		errNode := root.Get("error")
@@ -218,6 +237,9 @@ func mapInteractionsErrorToGemini(codeStr string) (int, string) {
 func rememberInteractionsGeminiStep(root ojson.Result, st *interactionsToGeminiStreamState) {
 	index := int(root.Get("index").Int())
 	step := root.Get("step")
+	if stepType := step.Get("type").String(); strings.TrimSpace(stepType) != "" {
+		st.StepTypes[index] = strings.Clone(stepType)
+	}
 	if name := step.Get("name").String(); strings.TrimSpace(name) != "" {
 		st.StepNames[index] = strings.Clone(name)
 	}
@@ -299,6 +321,30 @@ func interactionsStepDeltaToGeminiChunk(modelName string, root ojson.Result, st 
 		partDoc := ojson.NewDocString(`{"text":"","thought":true}`)
 		_ = partDoc.Set("thoughtSignature", signature)
 		return buildInteractionsGeminiChunk(st, modelName, [][]byte{partDoc.Bytes()}, "", ojson.Result{}, false)
+	case "image", "audio", "video", "document":
+		thought := st.StepTypes[index] == "thought"
+		part := interactionsContentPartToGeminiPart(delta, thought)
+		if len(part) == 0 {
+			return nil
+		}
+		st.EmittedMedia = true
+		return buildInteractionsGeminiChunk(st, modelName, [][]byte{part}, "", ojson.Result{}, false)
+	case "content":
+		if !delta.Get("content").Exists() {
+			return nil
+		}
+		thought := st.StepTypes[index] == "thought"
+		parts := interactionsContentToGeminiParts(delta.Get("content"), thought)
+		if len(parts) == 0 {
+			return nil
+		}
+		for _, p := range parts {
+			if ojson.GetBytesNoCopy(p, "inlineData").Exists() || ojson.GetBytesNoCopy(p, "fileData").Exists() {
+				st.EmittedMedia = true
+				break
+			}
+		}
+		return buildInteractionsGeminiChunk(st, modelName, parts, "", ojson.Result{}, false)
 	}
 	return nil
 }
@@ -404,6 +450,66 @@ func interactionsStepToGeminiParts(step ojson.Result) [][]byte {
 	default:
 		return interactionsContentToGeminiParts(step.Get("content"), false)
 	}
+}
+
+func interactionsOutputToGeminiParts(item ojson.Result) [][]byte {
+	switch item.Get("type").String() {
+	case "function_call":
+		return [][]byte{interactionsFunctionCallStepToGeminiPart(item)}
+	case "function_result":
+		return [][]byte{interactionsFunctionResponseStepToGeminiPart(item)}
+	case "thought":
+		if item.Get("content").Exists() || item.Get("summary").Exists() {
+			return extractInteractionsThoughtPartsToGemini(item)
+		}
+		if part := interactionsContentPartToGeminiPart(item, true); len(part) > 0 {
+			return [][]byte{part}
+		}
+		return nil
+	case "model_output", "user_input":
+		return interactionsStepToGeminiParts(item)
+	default:
+		if part := interactionsContentPartToGeminiPart(item, false); len(part) > 0 {
+			return [][]byte{part}
+		}
+		if item.Get("content").Exists() {
+			return interactionsContentToGeminiParts(item.Get("content"), false)
+		}
+		return nil
+	}
+}
+
+func extractInteractionsCompletedMediaParts(interaction, root ojson.Result) [][]byte {
+	var parts [][]byte
+	appendMediaOnly := func(candidates [][]byte) {
+		for _, part := range candidates {
+			if ojson.GetBytesNoCopy(part, "inlineData").Exists() || ojson.GetBytesNoCopy(part, "fileData").Exists() {
+				parts = append(parts, part)
+			}
+		}
+	}
+	steps := interaction.Get("steps")
+	if !steps.Exists() {
+		steps = root.Get("steps")
+	}
+	if steps.Exists() && steps.IsArray() {
+		steps.ForEach(func(_, step ojson.Result) bool {
+			appendMediaOnly(interactionsStepToGeminiParts(step))
+			return true
+		})
+		return parts
+	}
+	outputs := interaction.Get("outputs")
+	if !outputs.Exists() {
+		outputs = root.Get("outputs")
+	}
+	if outputs.Exists() && outputs.IsArray() {
+		outputs.ForEach(func(_, output ojson.Result) bool {
+			appendMediaOnly(interactionsOutputToGeminiParts(output))
+			return true
+		})
+	}
+	return parts
 }
 
 func interactionsContentToGeminiPartDocs(content ojson.Result, thought bool) []*ojson.Doc {
@@ -595,6 +701,9 @@ func firstNonEmptyInteractionString(values ...string) string {
 }
 
 func (st *interactionsToGeminiStreamState) ensureMaps() {
+	if st.StepTypes == nil {
+		st.StepTypes = make(map[int]string)
+	}
 	if st.StepNames == nil {
 		st.StepNames = make(map[int]string)
 	}

@@ -138,10 +138,15 @@ func convertToImagenRequest(payload []byte) ([]byte, error) {
 	// Extract prompt from Gemini-style contents
 	prompt := ""
 
-	// Try to get prompt from contents[0].parts[0].text
-	contentsText := ojson.GetBytesNoCopy(payload, "contents.0.parts.0.text")
-	if contentsText.Exists() {
-		prompt = contentsText.String()
+	// Try to get prompt from contents[0].parts
+	if parts := ojson.GetBytesNoCopy(payload, "contents.0.parts"); parts.Exists() && parts.IsArray() {
+		parts.ForEach(func(_, part ojson.Result) bool {
+			if text := strings.TrimSpace(part.Get("text").String()); text != "" {
+				prompt = text
+				return false
+			}
+			return true
+		})
 	}
 
 	// If no contents, try messages format (OpenAI-compatible)
@@ -182,8 +187,10 @@ func convertToImagenRequest(payload []byte) ([]byte, error) {
 	}
 
 	// Extract optional parameters
-	if aspectRatio := ojson.GetBytesNoCopy(payload, "aspectRatio"); aspectRatio.Exists() {
+	if aspectRatio := ojson.GetBytesNoCopy(payload, "aspectRatio"); aspectRatio.Exists() && strings.TrimSpace(aspectRatio.String()) != "" {
 		imagenReq["parameters"].(map[string]any)["aspectRatio"] = aspectRatio.String()
+	} else if cfgAspectRatio := ojson.GetBytesNoCopy(payload, "generationConfig.imageConfig.aspectRatio"); cfgAspectRatio.Exists() && strings.TrimSpace(cfgAspectRatio.String()) != "" {
+		imagenReq["parameters"].(map[string]any)["aspectRatio"] = cfgAspectRatio.String()
 	}
 	if sampleCount := ojson.GetBytesNoCopy(payload, "sampleCount"); sampleCount.Exists() {
 		imagenReq["parameters"].(map[string]any)["sampleCount"] = int(sampleCount.Int())
@@ -2042,7 +2049,7 @@ func (e *GeminiVertexExecutor) resolveVertexConfig(auth *cliproxyauth.Auth) *con
 func (e *GeminiVertexExecutor) SupportsApplyPatch() bool { return e != nil }
 
 func shouldExecuteVertexInteractions(auth *cliproxyauth.Auth, opts cliproxyexecutor.Options) bool {
-	return opts.SourceFormat == sdktranslator.FormatInteractions && isNativeVertexInteractionsAuth(auth)
+	return nativeInteractionsSourceFormat(opts.SourceFormat) && isNativeVertexInteractionsAuth(auth)
 }
 
 func isNativeVertexInteractionsAuth(auth *cliproxyauth.Auth) bool {

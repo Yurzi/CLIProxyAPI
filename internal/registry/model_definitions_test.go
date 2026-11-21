@@ -462,3 +462,55 @@ func TestGetDevinModelsFallback(t *testing.T) {
 		t.Errorf("info.DisplayName = %q, want SWE-2", info.DisplayName)
 	}
 }
+
+func TestWithGeminiBuiltinsIncludesNanoBanana21(t *testing.T) {
+	models := WithGeminiBuiltins(nil)
+	var found *ModelInfo
+	for _, m := range models {
+		if m != nil && m.ID == geminiBuiltinNanoBanana21ModelID {
+			found = m
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected built-in model %s when catalog is empty", geminiBuiltinNanoBanana21ModelID)
+	}
+	if found.OwnedBy != "google" || found.Type != "gemini" {
+		t.Fatalf("owned_by/type = %s/%s, want google/gemini", found.OwnedBy, found.Type)
+	}
+	hasImageOut := false
+	for _, mod := range found.SupportedOutputModalities {
+		if mod == "image" {
+			hasImageOut = true
+			break
+		}
+	}
+	if !hasImageOut {
+		t.Fatalf("SupportedOutputModalities = %v, want image included", found.SupportedOutputModalities)
+	}
+
+	customDesc := "custom override"
+	preserved := WithGeminiBuiltins([]*ModelInfo{{ID: geminiBuiltinNanoBanana21ModelID, Description: customDesc}})
+	if len(preserved) != 1 || preserved[0].Description != customDesc {
+		t.Fatalf("WithGeminiBuiltins should preserve catalog entry when present: %#v", preserved)
+	}
+
+	for _, channel := range []string{"gemini", "gemini-interactions", "vertex", "aistudio"} {
+		channelModels := GetStaticModelDefinitionsByChannel(channel)
+		foundChannel := false
+		for _, m := range channelModels {
+			if m != nil && m.ID == geminiBuiltinNanoBanana21ModelID {
+				foundChannel = true
+				break
+			}
+		}
+		if !foundChannel {
+			t.Errorf("channel %q missing %s", channel, geminiBuiltinNanoBanana21ModelID)
+		}
+	}
+
+	info := LookupStaticModelInfo(geminiBuiltinNanoBanana21ModelID)
+	if info == nil {
+		t.Fatalf("LookupStaticModelInfo(%q) = nil", geminiBuiltinNanoBanana21ModelID)
+	}
+}

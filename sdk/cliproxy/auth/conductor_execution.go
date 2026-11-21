@@ -3821,6 +3821,9 @@ func selectVerifyInferenceModel(models []*registry.ModelInfo) string {
 		if id == "" {
 			continue
 		}
+		if registry.IsEndpointOnlyModelType(info.Type) {
+			continue
+		}
 		if fallback == "" {
 			fallback = id
 		}
@@ -3828,7 +3831,7 @@ func selectVerifyInferenceModel(models []*registry.ModelInfo) string {
 			continue
 		}
 		lowerID := strings.ToLower(id)
-		if strings.Contains(lowerID, "image") || strings.Contains(lowerID, "video") {
+		if strings.Contains(lowerID, "image") || strings.Contains(lowerID, "video") || strings.Contains(lowerID, "nano-banana") {
 			if textModalityFallback == "" {
 				textModalityFallback = id
 			}

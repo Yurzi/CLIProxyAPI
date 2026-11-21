@@ -24,6 +24,7 @@ const (
 	xaiBuiltinVideo15LiteModelID       = "grok-imagine-video-1.5-lite"
 	xaiBuiltinSpeechModelID            = "grok-tts"
 	xaiBuiltinSpeechVoiceModelID       = "grok-voice-tts-1.0"
+	geminiBuiltinNanoBanana21ModelID   = "gemini-nano-banana-2.1"
 )
 
 // staticModelsJSON mirrors the top-level structure of models.json.
@@ -56,17 +57,17 @@ func GetCopilotModels() []*ModelInfo {
 
 // GetGeminiModels returns the standard Gemini model definitions.
 func GetGeminiModels() []*ModelInfo {
-	return cloneModelInfos(getModels().Gemini)
+	return WithGeminiBuiltins(cloneModelInfos(getModels().Gemini))
 }
 
 // GetGeminiVertexModels returns Gemini model definitions for Vertex AI.
 func GetGeminiVertexModels() []*ModelInfo {
-	return cloneModelInfos(getModels().Vertex)
+	return WithGeminiBuiltins(cloneModelInfos(getModels().Vertex))
 }
 
 // GetAIStudioModels returns model definitions for AI Studio.
 func GetAIStudioModels() []*ModelInfo {
-	return cloneModelInfos(getModels().AIStudio)
+	return WithGeminiBuiltins(cloneModelInfos(getModels().AIStudio))
 }
 
 // GetCodexFreeModels returns model definitions for the Codex free plan tier.
@@ -149,6 +150,39 @@ func WithCodexBuiltins(models []*ModelInfo) []*ModelInfo {
 // that should not depend on remote models.json updates.
 func WithXAIBuiltins(models []*ModelInfo) []*ModelInfo {
 	return upsertModelInfos(models, xaiBuiltinImageModelInfo(), xaiBuiltinImageQualityModelInfo(), xaiBuiltinImage20ModelInfo(), xaiBuiltinVideoModelInfo(), xaiBuiltinVideo15ModelInfo(), xaiBuiltinVideo15PreviewModelInfo(), xaiBuiltinVideo15LiteModelInfo(), xaiBuiltinSpeechModelInfo(), xaiBuiltinSpeechVoiceModelInfo())
+}
+
+// WithGeminiBuiltins injects hard-coded Gemini image model defaults when they
+// are absent from a static or remotely refreshed catalog slice.
+func WithGeminiBuiltins(models []*ModelInfo) []*ModelInfo {
+	return ensureModelInfos(models, geminiBuiltinNanoBanana21ModelInfo())
+}
+
+func geminiBuiltinNanoBanana21ModelInfo() *ModelInfo {
+	webSearch := true
+	return &ModelInfo{
+		ID:                         geminiBuiltinNanoBanana21ModelID,
+		Object:                     "model",
+		Created:                    1776556800,
+		OwnedBy:                    "google",
+		Type:                       "gemini",
+		DisplayName:                "Gemini Nano Banana 2.1",
+		Name:                       "models/" + geminiBuiltinNanoBanana21ModelID,
+		Version:                    "2.1",
+		Description:                "Gemini Nano Banana 2.1 image generation and editing model",
+		InputTokenLimit:            1048576,
+		OutputTokenLimit:           65536,
+		SupportedGenerationMethods: []string{"generateContent", "countTokens", "createCachedContent", "batchGenerateContent"},
+		Thinking: &ThinkingSupport{
+			Min:            128,
+			Max:            32768,
+			DynamicAllowed: true,
+			Levels:         []string{"minimal", "low", "medium", "high"},
+		},
+		SupportedInputModalities:  []string{"text", "image"},
+		SupportedOutputModalities: []string{"text", "image"},
+		NativeCapabilities:        &NativeCapabilities{WebSearch: &webSearch},
+	}
 }
 
 func normalizeAntigravityCapabilityModelID(modelID string) string {
@@ -420,6 +454,41 @@ func upsertModelInfos(models []*ModelInfo, extras ...*ModelInfo) []*ModelInfo {
 	return filtered
 }
 
+func ensureModelInfos(models []*ModelInfo, defaults ...*ModelInfo) []*ModelInfo {
+	if len(defaults) == 0 {
+		return models
+	}
+	existing := make(map[string]struct{}, len(models))
+	out := make([]*ModelInfo, 0, len(models)+len(defaults))
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		id := strings.TrimSpace(model.ID)
+		if id == "" {
+			continue
+		}
+		existing[strings.ToLower(id)] = struct{}{}
+		out = append(out, model)
+	}
+	for _, def := range defaults {
+		if def == nil {
+			continue
+		}
+		id := strings.TrimSpace(def.ID)
+		if id == "" {
+			continue
+		}
+		key := strings.ToLower(id)
+		if _, exists := existing[key]; exists {
+			continue
+		}
+		existing[key] = struct{}{}
+		out = append(out, cloneModelInfo(def))
+	}
+	return out
+}
+
 // cloneModelInfos returns a shallow copy of the slice with each element deep-cloned.
 func cloneModelInfos(models []*ModelInfo) []*ModelInfo {
 	if len(models) == 0 {
@@ -462,11 +531,11 @@ func staticModelDefinitionsByChannel(channel string) []*ModelInfo {
 	case "claude":
 		return data.Claude
 	case "gemini", "gemini-interactions":
-		return data.Gemini
+		return WithGeminiBuiltins(data.Gemini)
 	case "vertex":
-		return data.Vertex
+		return WithGeminiBuiltins(data.Vertex)
 	case "aistudio":
-		return data.AIStudio
+		return WithGeminiBuiltins(data.AIStudio)
 	case "codex":
 		return WithCodexBuiltins(data.CodexPro)
 	case "kimi", "kimi-ai", "kimi.ai", "kimi.com":
@@ -548,13 +617,13 @@ func lookupStaticModelInfo(modelID string, additionalCatalog []*ModelInfo) *Mode
 	}
 	for _, models := range [][]*ModelInfo{
 		data.Claude,
-		data.Gemini,
-		data.Vertex,
-		data.AIStudio,
-		data.CodexPro,
+		WithGeminiBuiltins(data.Gemini),
+		WithGeminiBuiltins(data.Vertex),
+		WithGeminiBuiltins(data.AIStudio),
+		WithCodexBuiltins(data.CodexPro),
 		data.Kimi,
 		data.Antigravity,
-		data.XAI,
+		WithXAIBuiltins(data.XAI),
 		data.Meta,
 		data.Copilot,
 		// Keep the existing lookup order for bare IDs shared with independent catalogs.

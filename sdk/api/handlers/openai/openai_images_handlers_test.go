@@ -21,6 +21,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
@@ -51,7 +52,7 @@ func assertUnsupportedImagesModelResponse(t *testing.T, resp *httptest.ResponseR
 	}
 
 	message := ojson.GetBytesNoCopy(resp.Body.Bytes(), "error.message").String()
-	expectedMessage := "Model " + model + " is not supported on " + imagesGenerationsPath + " or " + imagesEditsPath + ". Use " + gptImage15Model + ", " + defaultImagesToolModel + ", " + gptImage25FlareModel + ", " + gptImage25SunburstModel + ", " + gptImage25Model + ", " + gptImage26FlareModel + ", " + gptImage26SunburstModel + ", " + gptImage26Model + ", " + defaultXAIImagesModel + ", " + xaiImagesQualityModel + ", " + xaiImages20Model + ", " + geminiFlashImageModel + ", or a configured openai-compatibility image model."
+	expectedMessage := "Model " + model + " is not supported on " + imagesGenerationsPath + " or " + imagesEditsPath + ". Use " + gptImage15Model + ", " + defaultImagesToolModel + ", " + gptImage25FlareModel + ", " + gptImage25SunburstModel + ", " + gptImage25Model + ", " + gptImage26FlareModel + ", " + gptImage26SunburstModel + ", " + gptImage26Model + ", " + defaultXAIImagesModel + ", " + xaiImagesQualityModel + ", " + xaiImages20Model + ", " + geminiFlashImageModel + ", " + geminiNanoBanana21Model + ", or a configured openai-compatibility image model."
 	if message != expectedMessage {
 		t.Fatalf("error message = %q, want %q", message, expectedMessage)
 	}
@@ -117,11 +118,41 @@ func TestImagesModelValidationAllowsOpenAICompatImageModels(t *testing.T) {
 }
 
 func TestImagesModelValidationAllowsGeminiImageModels(t *testing.T) {
+	modelRegistry := registry.GetGlobalRegistry()
+	clientID := "test-gemini-alias-image-model-validation"
+	modelRegistry.RegisterClient(clientID, "gemini", []*registry.ModelInfo{
+		{
+			ID:                        "custom-gemini-banana-alias",
+			Object:                    "model",
+			OwnedBy:                   "google",
+			Type:                      "gemini",
+			MetadataModelID:           "gemini-nano-banana-2.1",
+			SupportedOutputModalities: []string{"text", "image"},
+		},
+		{
+			ID:              "vertex-alias-by-metadata",
+			Object:          "model",
+			OwnedBy:         "google",
+			Type:            "vertex",
+			MetadataModelID: "gemini-nano-banana-2.1",
+		},
+	})
+	t.Cleanup(func() {
+		modelRegistry.UnregisterClient(clientID)
+	})
+
 	for _, model := range []string{
+		"gemini-nano-banana-2.1",
+		"gemini/gemini-nano-banana-2.1",
+		"vertex/gemini-nano-banana-2.1",
+		"gemini-interactions/gemini-nano-banana-2.1",
+		"gemini-3-pro-image-preview",
 		"gemini-3.1-flash-image",
 		"antigravity/gemini-3.1-flash-image",
 		"gemini-2.5-flash-image-preview",
 		"imagen-3.0-generate-002",
+		"custom-gemini-banana-alias",
+		"vertex-alias-by-metadata",
 	} {
 		if !isSupportedImagesModel(model) {
 			t.Fatalf("expected %s to be supported", model)
@@ -364,6 +395,8 @@ func TestGeminiImageAspectRatioFromSize(t *testing.T) {
 		want string
 	}{
 		{"1024x1024", "1:1"},
+		{"2048x2048", "1:1"},
+		{"4096x4096", "1:1"},
 		{"1792x1024", "16:9"},
 		{"1536x1024", "3:2"},
 		{"1280x720", "16:9"},
@@ -373,75 +406,83 @@ func TestGeminiImageAspectRatioFromSize(t *testing.T) {
 		{"1024x768", "4:3"},
 		{"768x1024", "3:4"},
 		{"800x600", "1:1"},
+		{"auto", ""},
 		{"", ""},
 		{"  ", ""},
 	}
 	for _, tt := range tests {
-		if got := geminiImageAspectRatioFromSize(tt.size); got != tt.want {
-			t.Errorf("geminiImageAspectRatioFromSize(%q) = %q, want %q", tt.size, got, tt.want)
+		if got := translatorcommon.GeminiImageAspectRatioFromSize(tt.size); got != tt.want {
+			t.Errorf("GeminiImageAspectRatioFromSize(%q) = %q, want %q", tt.size, got, tt.want)
 		}
 	}
 }
 
-func TestBuildGeminiChatImagesRequest(t *testing.T) {
-	req := buildGeminiChatImagesRequest("draw a sunset", "gemini-3.1-flash-image", "1792x1024")
-
-	if got := ojson.GetBytesNoCopy(req, "model").String(); got != "gemini-3.1-flash-image" {
-		t.Fatalf("model = %q, want gemini-3.1-flash-image", got)
+func TestBuildGeminiImagesRequest(t *testing.T) {
+	opts, err := parseGeminiImagesOptionsFromJSON([]byte(`{"size":"1792x1024","resolution":"2K"}`), "gemini-nano-banana-2.1", "draw a sunset", "b64_json", false)
+	if err != nil {
+		t.Fatalf("parseGeminiImagesOptionsFromJSON error = %v", err)
 	}
-	if got := ojson.GetBytesNoCopy(req, "messages.0.role").String(); got != "user" {
+	req := buildGeminiImagesRequest(opts, nil)
+
+	if got := ojson.GetBytesNoCopy(req, "contents.0.role").String(); got != "user" {
 		t.Fatalf("role = %q, want user", got)
 	}
-	if got := ojson.GetBytesNoCopy(req, "messages.0.content").String(); got != "draw a sunset" {
-		t.Fatalf("content = %q, want draw a sunset", got)
+	if got := ojson.GetBytesNoCopy(req, "contents.0.parts.0.text").String(); got != "draw a sunset" {
+		t.Fatalf("text = %q, want draw a sunset", got)
 	}
-	modalities := ojson.GetBytesNoCopy(req, "modalities").Array()
-	if len(modalities) != 2 || modalities[0].String() != "image" || modalities[1].String() != "text" {
-		t.Fatalf("modalities = %s, want [\"image\", \"text\"]", ojson.GetBytesNoCopy(req, "modalities").Raw)
+	modalities := ojson.GetBytesNoCopy(req, "generationConfig.responseModalities").Array()
+	if len(modalities) != 1 || modalities[0].String() != "IMAGE" {
+		t.Fatalf("responseModalities = %s, want [\"IMAGE\"]", ojson.GetBytesNoCopy(req, "generationConfig.responseModalities").Raw)
 	}
-	if got := ojson.GetBytesNoCopy(req, "image_config.aspect_ratio").String(); got != "16:9" {
-		t.Fatalf("image_config.aspect_ratio = %q, want 16:9", got)
+	if got := ojson.GetBytesNoCopy(req, "generationConfig.imageConfig.aspectRatio").String(); got != "16:9" {
+		t.Fatalf("aspectRatio = %q, want 16:9", got)
+	}
+	if got := ojson.GetBytesNoCopy(req, "generationConfig.imageConfig.imageSize").String(); got != "2K" {
+		t.Fatalf("imageSize = %q, want 2K", got)
 	}
 
-	reqNoSize := buildGeminiChatImagesRequest("draw a sunset", "gemini-3.1-flash-image", "")
-	if ojson.GetBytesNoCopy(reqNoSize, "image_config.aspect_ratio").Exists() {
-		t.Fatalf("expected no aspect_ratio when size is empty, got %s", ojson.GetBytesNoCopy(reqNoSize, "image_config").Raw)
+	optsAuto, err := parseGeminiImagesOptionsFromJSON([]byte(`{"size":"auto"}`), "gemini-nano-banana-2.1", "draw a sunset", "b64_json", false)
+	if err != nil {
+		t.Fatalf("parseGeminiImagesOptionsFromJSON(auto) error = %v", err)
+	}
+	reqAuto := buildGeminiImagesRequest(optsAuto, nil)
+	if ojson.GetBytesNoCopy(reqAuto, "generationConfig.imageConfig.aspectRatio").Exists() {
+		t.Fatalf("expected no aspectRatio for size=auto, got %s", ojson.GetBytesNoCopy(reqAuto, "generationConfig").Raw)
 	}
 }
 
-func TestBuildGeminiChatImagesEditRequest(t *testing.T) {
-	images := []string{
+func TestBuildGeminiImagesEditRequest(t *testing.T) {
+	inlineImages, err := parseGeminiInlineImages([]string{
 		"data:image/png;base64,AA==",
-		"data:image/png;base64,BB==",
+		"data:image/jpeg;base64,BB==",
+	})
+	if err != nil {
+		t.Fatalf("parseGeminiInlineImages error = %v", err)
 	}
-	req := buildGeminiChatImagesEditRequest("add sunglasses", "antigravity/gemini-3.1-flash-image", "1024x1024", images)
+	opts, err := parseGeminiImagesOptionsFromJSON([]byte(`{"size":"1024x1024","aspect_ratio":"21:9"}`), "antigravity/gemini-3.1-flash-image", "add sunglasses", "b64_json", false)
+	if err != nil {
+		t.Fatalf("parseGeminiImagesOptionsFromJSON error = %v", err)
+	}
+	req := buildGeminiImagesRequest(opts, inlineImages)
 
-	if got := ojson.GetBytesNoCopy(req, "model").String(); got != "antigravity/gemini-3.1-flash-image" {
-		t.Fatalf("model = %q, want antigravity/gemini-3.1-flash-image", got)
-	}
-	if got := ojson.GetBytesNoCopy(req, "messages.0.role").String(); got != "user" {
+	if got := ojson.GetBytesNoCopy(req, "contents.0.role").String(); got != "user" {
 		t.Fatalf("role = %q, want user", got)
 	}
-	content := ojson.GetBytesNoCopy(req, "messages.0.content").Array()
-	if len(content) != 3 {
-		t.Fatalf("content parts len = %d, want 3", len(content))
+	parts := ojson.GetBytesNoCopy(req, "contents.0.parts").Array()
+	if len(parts) != 3 {
+		t.Fatalf("parts len = %d, want 3", len(parts))
 	}
-	if content[0].Get("type").String() != "image_url" || content[0].Get("image_url.url").String() != "data:image/png;base64,AA==" {
-		t.Fatalf("content[0] = %s", content[0].Raw)
+	if parts[0].Get("inlineData.mimeType").String() != "image/png" || parts[0].Get("inlineData.data").String() != "AA==" {
+		t.Fatalf("parts[0] = %s", parts[0].Raw)
 	}
-	if content[1].Get("type").String() != "image_url" || content[1].Get("image_url.url").String() != "data:image/png;base64,BB==" {
-		t.Fatalf("content[1] = %s", content[1].Raw)
+	if parts[1].Get("inlineData.mimeType").String() != "image/jpeg" || parts[1].Get("inlineData.data").String() != "BB==" {
+		t.Fatalf("parts[1] = %s", parts[1].Raw)
 	}
-	if content[2].Get("type").String() != "text" || content[2].Get("text").String() != "add sunglasses" {
-		t.Fatalf("content[2] = %s", content[2].Raw)
+	if parts[2].Get("text").String() != "add sunglasses" {
+		t.Fatalf("parts[2] = %s", parts[2].Raw)
 	}
-	modalities := ojson.GetBytesNoCopy(req, "modalities").Array()
-	if len(modalities) != 2 || modalities[0].String() != "image" || modalities[1].String() != "text" {
-		t.Fatalf("modalities = %s, want [\"image\", \"text\"]", ojson.GetBytesNoCopy(req, "modalities").Raw)
-	}
-	if got := ojson.GetBytesNoCopy(req, "image_config.aspect_ratio").String(); got != "1:1" {
-		t.Fatalf("image_config.aspect_ratio = %q, want 1:1", got)
-
+	if got := ojson.GetBytesNoCopy(req, "generationConfig.imageConfig.aspectRatio").String(); got != "21:9" {
+		t.Fatalf("aspectRatio = %q, want 21:9 (explicit aspect_ratio overrides size)", got)
 	}
 }
 
@@ -561,33 +602,48 @@ func TestBuildImagesAPIResponseFromXAI(t *testing.T) {
 	}
 }
 
-func TestExtractImagesFromChatCompletions(t *testing.T) {
+func TestExtractImagesFromGeminiResponse(t *testing.T) {
 	resp := []byte(`{
-		"created": 1700000000,
-		"choices": [
+		"candidates": [
 			{
-				"message": {
-					"images": [
+				"content": {
+					"role": "model",
+					"parts": [
 						{
-							"image_url": {
-								"url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=="
+							"thought": true,
+							"inlineData": {
+								"mimeType": "image/png",
+								"data": "ZHJhZnQ="
+							}
+						},
+						{
+							"inlineData": {
+								"mimeType": "image/png",
+								"data": "iVBORw0KGgoAAAANSUhEUg=="
 							}
 						}
 					]
-				}
+				},
+				"finishReason": "STOP"
 			}
-		]
+		],
+		"usageMetadata": {
+			"promptTokenCount": 12,
+			"candidatesTokenCount": 1290,
+			"totalTokenCount": 1302,
+			"promptTokensDetails": [
+				{"modality": "TEXT", "tokenCount": 7},
+				{"modality": "IMAGE", "tokenCount": 5}
+			]
+		}
 	}`)
 
-	results, createdAt, err := extractImagesFromChatCompletions(resp)
+	results, usageRaw, err := extractImagesFromGeminiResponse(resp, "", 0)
 	if err != nil {
-		t.Fatalf("extractImagesFromChatCompletions error = %v", err)
-	}
-	if createdAt != 1700000000 {
-		t.Fatalf("createdAt = %d, want 1700000000", createdAt)
+		t.Fatalf("extractImagesFromGeminiResponse error = %v", err)
 	}
 	if len(results) != 1 {
-		t.Fatalf("len(results) = %d, want 1", len(results))
+		t.Fatalf("len(results) = %d, want 1 (thought draft must be skipped)", len(results))
 	}
 	if results[0].Result != "iVBORw0KGgoAAAANSUhEUg==" {
 		t.Fatalf("results[0].Result = %q, want iVBORw0KGgoAAAANSUhEUg==", results[0].Result)
@@ -595,37 +651,43 @@ func TestExtractImagesFromChatCompletions(t *testing.T) {
 	if results[0].OutputFormat != "png" {
 		t.Fatalf("results[0].OutputFormat = %q, want png", results[0].OutputFormat)
 	}
+	if got := ojson.GetBytesNoCopy(usageRaw, "total_tokens").Int(); got != 1302 {
+		t.Fatalf("usage.total_tokens = %d, want 1302", got)
+	}
+	if got := ojson.GetBytesNoCopy(usageRaw, "input_tokens_details.image_tokens").Int(); got != 5 {
+		t.Fatalf("usage.input_tokens_details.image_tokens = %d, want 5", got)
+	}
 }
 
-func TestExtractImagesFromChatCompletionsNoImages(t *testing.T) {
-	respNoImages := []byte(`{
-		"created": 1700000000,
-		"choices": [
+func TestExtractImagesFromGeminiResponseNoImages(t *testing.T) {
+	respOnlyThought := []byte(`{
+		"candidates": [
 			{
-				"message": {
-					"images": []
+				"content": {
+					"parts": [
+						{"thought": true, "inlineData": {"mimeType": "image/png", "data": "AA=="}}
+					]
 				}
 			}
 		]
 	}`)
-	_, _, err := extractImagesFromChatCompletions(respNoImages)
-	if err == nil {
-		t.Fatal("expected error on empty images array, got nil")
+	if _, _, err := extractImagesFromGeminiResponse(respOnlyThought, "", 0); err == nil {
+		t.Fatal("expected error when only thought images exist, got nil")
 	}
 
-	respMissingImages := []byte(`{
-		"created": 1700000000,
-		"choices": [
+	respTextOnly := []byte(`{
+		"candidates": [
 			{
-				"message": {
-					"content": "sorry I cannot generate images"
+				"content": {
+					"parts": [
+						{"text": "sorry I cannot generate images"}
+					]
 				}
 			}
 		]
 	}`)
-	_, _, err = extractImagesFromChatCompletions(respMissingImages)
-	if err == nil {
-		t.Fatal("expected error on missing images array, got nil")
+	if _, _, err := extractImagesFromGeminiResponse(respTextOnly, "", 0); err == nil {
+		t.Fatal("expected error on text-only response, got nil")
 	}
 }
 

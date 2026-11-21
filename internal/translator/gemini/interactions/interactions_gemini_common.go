@@ -94,8 +94,31 @@ func convertGeminiRequestToInteractions(modelName string, inputRawJSON []byte, s
 			inputItems = append(inputItems, stepDoc.Bytes())
 			pendingThoughtSummary = nil
 		}
+		// Consecutive non-thought parts of one turn share a single Interactions
+		// step, so an image and its instruction stay one user_input.
+		pendingType := ""
+		var pendingItems [][]byte
+		flushPendingContent := func() {
+			if len(pendingItems) == 0 {
+				return
+			}
+			stepDoc := ojson.NewDocString(`{"type":"","content":[]}`)
+			_ = stepDoc.Set("type", pendingType)
+			translatorcommon.SetRawArrayItemsDoc(stepDoc, "content", pendingItems)
+			inputItems = append(inputItems, stepDoc.Bytes())
+			pendingType = ""
+			pendingItems = nil
+		}
+		appendContent := func(item []byte) {
+			if pendingType != "" && pendingType != stepType {
+				flushPendingContent()
+			}
+			pendingType = stepType
+			pendingItems = append(pendingItems, item)
+		}
 		content.Get("parts").ForEach(func(_, part ojson.Result) bool {
-			if fc := part.Get("functionCall"); fc.Exists() {
+			if part.Get("functionCall").Exists() {
+				flushPendingContent()
 				mergedPendingSig := false
 				if len(pendingThoughtSummary) > 0 {
 					if fcSig := interactionsThoughtSignature(part); fcSig != "" {
@@ -117,7 +140,8 @@ func convertGeminiRequestToInteractions(modelName string, inputRawJSON []byte, s
 				}
 				return true
 			}
-			if fr := translatorcommon.GeminiPartFunctionResponse(part); fr.Exists() {
+			if translatorcommon.GeminiPartFunctionResponse(part).Exists() {
+				flushPendingContent()
 				flushPendingThought("")
 				for _, step := range geminiPartToInteractionsSteps(part) {
 					if len(step) > 0 {
@@ -128,6 +152,7 @@ func convertGeminiRequestToInteractions(modelName string, inputRawJSON []byte, s
 				return true
 			}
 			if text := part.Get("text"); text.Exists() && text.String() == "" {
+				flushPendingContent()
 				if role == "model" {
 					if sig := interactionsThoughtSignature(part); sig != "" {
 						flushPendingThought(sig)
@@ -148,6 +173,7 @@ func convertGeminiRequestToInteractions(modelName string, inputRawJSON []byte, s
 			if len(item) == 0 {
 				if role == "model" {
 					if sig := interactionsThoughtSignature(part); sig != "" {
+						flushPendingContent()
 						flushPendingThought(sig)
 					}
 				} else if geminiPartFileData(part).Exists() {
@@ -156,6 +182,7 @@ func convertGeminiRequestToInteractions(modelName string, inputRawJSON []byte, s
 				return true
 			}
 			if part.Get("thought").Bool() && role == "model" {
+				flushPendingContent()
 				pendingThoughtSummary = append(pendingThoughtSummary, item)
 				if sig := interactionsThoughtSignature(part); sig != "" {
 					flushPendingThought(sig)
@@ -164,18 +191,23 @@ func convertGeminiRequestToInteractions(modelName string, inputRawJSON []byte, s
 				return true
 			}
 			flushPendingThought("")
-			stepDoc := ojson.NewDocString(`{"type":"","content":[]}`)
-			_ = stepDoc.Set("type", stepType)
-			translatorcommon.SetRawArrayItemsDoc(stepDoc, "content", [][]byte{item})
-			inputItems = append(inputItems, stepDoc.Bytes())
 			if role == "model" {
 				if sig := interactionsThoughtSignature(part); sig != "" {
+					flushPendingContent()
+					stepDoc := ojson.NewDocString(`{"type":"","content":[]}`)
+					_ = stepDoc.Set("type", stepType)
+					translatorcommon.SetRawArrayItemsDoc(stepDoc, "content", [][]byte{item})
+					inputItems = append(inputItems, stepDoc.Bytes())
 					inputItems = append(inputItems, geminiThoughtStepJSON(sig, ""))
+					sendable++
+					return true
 				}
 			}
+			appendContent(item)
 			sendable++
 			return true
 		})
+		flushPendingContent()
 		flushPendingThought("")
 		if role != "model" {
 			drops.EndTurn(sendable)
@@ -1453,6 +1485,17 @@ func appendInteractionsContentPart(items *[][]byte, role string, part ojson.Resu
 	}
 }
 
+func markGeminiPartThought(part []byte, thought bool) []byte {
+	if !thought || len(part) == 0 {
+		return part
+	}
+	updated, err := ojson.SetBytes(part, "thought", true)
+	if err != nil {
+		return part
+	}
+	return updated
+}
+
 func interactionsContentPartToGeminiPart(part ojson.Result, thought bool) []byte {
 	partDoc := interactionsContentPartToGeminiPartDoc(part, thought)
 	if partDoc == nil {
@@ -1877,6 +1920,29 @@ func appendGeminiPartToInteractionsStream(out [][]byte, st *StreamState, part oj
 		setInteractionsResultFromGeminiFunctionResponse(deltaDoc, "delta.result", fr)
 		out = append(out, translatorcommon.SSEEventData("step.delta", deltaDoc.Bytes()))
 		return appendInteractionsStepStop(out, st)
+	}
+	inline := part.Get("inlineData")
+	if !inline.Exists() {
+		inline = part.Get("inline_data")
+	}
+	if inline.Exists() {
+		mimeType := inline.Get("mimeType").String()
+		if mimeType == "" {
+			mimeType = inline.Get("mime_type").String()
+		}
+		data := inline.Get("data").String()
+		if mimeType != "" && data != "" {
+			stepType := "model_output"
+			if part.Get("thought").Bool() {
+				stepType = "thought"
+			}
+			out = ensureInteractionsStep(out, st, stepType, ojson.Result{})
+			deltaDoc := ojson.NewDocString(`{"index":0,"delta":{},"event_type":"step.delta"}`)
+			_ = deltaDoc.Set("index", st.ActiveStepIndex)
+			_ = deltaDoc.SetRawBytes("delta", geminiInlineDataToInteractionsContent(mimeType, data))
+			out = append(out, translatorcommon.SSEEventData("step.delta", deltaDoc.Bytes()))
+			return appendInteractionsThoughtSignature(out, st, part)
+		}
 	}
 	if sig := interactionsThoughtSignature(part); sig != "" {
 		return appendInteractionsThoughtSignature(out, st, part)

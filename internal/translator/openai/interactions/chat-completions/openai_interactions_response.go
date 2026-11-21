@@ -27,6 +27,7 @@ type interactionsToOpenAIChatStreamState struct {
 	TextByStepIndex     map[int]*strings.Builder
 	ToolCallIndexByStep map[int]int
 	NextToolCallIndex   int
+	ImageCount          int
 }
 
 func ConvertInteractionsResponseToOpenAI(ctx context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) [][]byte {
@@ -67,28 +68,74 @@ func ConvertInteractionsResponseToOpenAINonStream(ctx context.Context, modelName
 	var reasoningBuilder strings.Builder
 	sawToolCall := false
 	var toolCalls [][]byte
-	steps.ForEach(func(_, step ojson.Result) bool {
+	var images [][]byte
+	appendStepImages := func(content ojson.Result) {
+		for _, url := range interactionsContentImageURLsForOpenAIChat(content) {
+			images = append(images, openAIChatImageItem(len(images), url))
+		}
+	}
+	handleStep := func(step ojson.Result, allowDirectOutput bool) {
+		forAntigravity := isAntigravityModel(firstNonEmpty(interaction.Get("model").String(), modelName))
 		switch step.Get("type").String() {
 		case "model_output":
 			for _, text := range interactionsContentTextsForOpenAIChat(step.Get("content")) {
 				textBuilder.WriteString(text)
 			}
+			appendStepImages(step.Get("content"))
 		case "thought":
-			for _, text := range interactionsContentTextsForOpenAIChat(step.Get("content")) {
+			content := step.Get("content")
+			if !content.Exists() {
+				content = step.Get("summary")
+			}
+			if !content.Exists() {
+				content = step.Get("text")
+			}
+			for _, text := range interactionsContentTextsForOpenAIChat(content) {
 				reasoningBuilder.WriteString(text)
 			}
 		case "function_call":
 			sawToolCall = true
-			forAntigravity := isAntigravityModel(firstNonEmpty(interaction.Get("model").String(), modelName))
 			toolCalls = append(toolCalls, openAIChatToolCallFromInteractions(step, ojson.Result{}, forAntigravity))
+		default:
+			if allowDirectOutput {
+				if url := interactionsPartImageURLForOpenAIChat(step); url != "" {
+					images = append(images, openAIChatImageItem(len(images), url))
+				} else if text := firstNonEmpty(step.Get("text").String(), step.Get("content.text").String()); text != "" {
+					textBuilder.WriteString(text)
+				} else if step.Get("content").Exists() {
+					for _, text := range interactionsContentTextsForOpenAIChat(step.Get("content")) {
+						textBuilder.WriteString(text)
+					}
+					appendStepImages(step.Get("content"))
+				}
+			}
 		}
-		return true
-	})
+	}
+	if steps.Exists() && steps.IsArray() {
+		steps.ForEach(func(_, step ojson.Result) bool {
+			handleStep(step, false)
+			return true
+		})
+	} else {
+		outputs := interaction.Get("outputs")
+		if !outputs.Exists() {
+			outputs = root.Get("outputs")
+		}
+		if outputs.Exists() && outputs.IsArray() {
+			outputs.ForEach(func(_, output ojson.Result) bool {
+				handleStep(output, true)
+				return true
+			})
+		}
+	}
 	if textBuilder.Len() > 0 {
 		_ = outDoc.Set("choices.0.message.content", textBuilder.String())
 	}
 	if reasoningBuilder.Len() > 0 {
 		_ = outDoc.Set("choices.0.message.reasoning_content", reasoningBuilder.String())
+	}
+	if len(images) > 0 {
+		translatorcommon.SetRawArrayItemsDoc(outDoc, "choices.0.message.images", images)
 	}
 	if len(toolCalls) > 0 {
 		translatorcommon.SetRawArrayItemsDoc(outDoc, "choices.0.message.tool_calls", toolCalls)
@@ -203,6 +250,30 @@ func interactionsStepDeltaToOpenAIChat(modelName string, root ojson.Result, st *
 		}
 		st.ToolArguments[index].WriteString(args)
 		return append(out, openAIChatToolCallArgumentsChunk(st, index, args))
+	case "image":
+		if st.StepTypes[index] == "thought" {
+			return out
+		}
+		if url := interactionsPartImageURLForOpenAIChat(delta); url != "" {
+			return append(out, openAIChatDeltaImageChunk(st, url))
+		}
+		return out
+	case "content":
+		if st.StepTypes[index] == "thought" {
+			return out
+		}
+		content := delta.Get("content")
+		for _, text := range interactionsContentTextsForOpenAIChat(content) {
+			if st.TextByStepIndex[index] == nil {
+				st.TextByStepIndex[index] = &strings.Builder{}
+			}
+			st.TextByStepIndex[index].WriteString(text)
+			out = append(out, openAIChatDeltaChunk(st, "content", text))
+		}
+		for _, url := range interactionsContentImageURLsForOpenAIChat(content) {
+			out = append(out, openAIChatDeltaImageChunk(st, url))
+		}
+		return out
 	default:
 		text := delta.Get("text").String()
 		if text == "" {
@@ -386,6 +457,69 @@ func interactionsContentTextsForOpenAIChat(content ojson.Result) []string {
 		return true
 	})
 	return out
+}
+
+func interactionsContentImageURLsForOpenAIChat(content ojson.Result) []string {
+	if !content.Exists() {
+		return nil
+	}
+	var urls []string
+	if content.IsObject() {
+		if url := interactionsPartImageURLForOpenAIChat(content); url != "" {
+			urls = append(urls, url)
+		}
+		return urls
+	}
+	if content.IsArray() {
+		content.ForEach(func(_, part ojson.Result) bool {
+			if url := interactionsPartImageURLForOpenAIChat(part); url != "" {
+				urls = append(urls, url)
+			}
+			return true
+		})
+	}
+	return urls
+}
+
+func interactionsPartImageURLForOpenAIChat(part ojson.Result) string {
+	if !part.Exists() {
+		return ""
+	}
+	partType := strings.ToLower(strings.TrimSpace(part.Get("type").String()))
+	if inline := firstExisting(part.Get("inlineData"), part.Get("inline_data")); inline.Exists() {
+		data := strings.TrimSpace(inline.Get("data").String())
+		if data != "" {
+			mimeType := firstNonEmpty(inline.Get("mimeType").String(), inline.Get("mime_type").String(), "image/png")
+			return fmt.Sprintf("data:%s;base64,%s", mimeType, data)
+		}
+	}
+	if partType != "image" && partType != "image_url" && partType != "input_image" {
+		return ""
+	}
+	if data := strings.TrimSpace(part.Get("data").String()); data != "" {
+		mimeType := firstNonEmpty(part.Get("mime_type").String(), part.Get("mimeType").String(), "image/png")
+		return fmt.Sprintf("data:%s;base64,%s", mimeType, data)
+	}
+	return firstNonEmpty(part.Get("image_url.url").String(), part.Get("image_url").String(), part.Get("url").String(), part.Get("uri").String(), part.Get("file_uri").String(), part.Get("fileUri").String())
+}
+
+func openAIChatImageItem(index int, url string) []byte {
+	imageDoc := ojson.NewDocString(`{"type":"image_url","image_url":{"url":""}}`)
+	_ = imageDoc.Set("index", index)
+	_ = imageDoc.Set("image_url.url", url)
+	return imageDoc.Bytes()
+}
+
+func openAIChatDeltaImageChunk(st *interactionsToOpenAIChatStreamState, url string) []byte {
+	chunkDoc := openAIChatBaseChunkDoc(st)
+	idx := 0
+	if st != nil {
+		idx = st.ImageCount
+		st.ImageCount++
+	}
+	_ = chunkDoc.SetRaw("choices.0.delta.images", `[]`)
+	_ = chunkDoc.SetRawBytes("choices.0.delta.images.-1", openAIChatImageItem(idx, url))
+	return chunkDoc.Bytes()
 }
 
 func openAIChatInteractionsPayload(rawJSON []byte) []byte {

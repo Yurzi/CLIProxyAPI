@@ -541,3 +541,61 @@ func TestGeminiVertexInteractions_PayloadRulesOrdering(t *testing.T) {
 		t.Fatalf("custom_rule_param = %q, want enforced_after_all_transforms. Body: %s", got, string(upstreamBody))
 	}
 }
+
+func TestGeminiVertexInteractions_APIKey_FromGeminiFormat(t *testing.T) {
+	var mu sync.Mutex
+	var gotPath string
+	var gotBody []byte
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		gotPath = r.URL.Path
+		gotBody = body
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"interaction_vx_img",
+			"object":"interaction",
+			"status":"completed",
+			"steps":[{"type":"model_output","content":[{"type":"image","mime_type":"image/png","data":"dGVzdA=="}]}]
+		}`))
+	}))
+	defer server.Close()
+
+	exec := NewGeminiVertexExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		ID:       "vertex-apikey-gemini-to-interactions",
+		Provider: "vertex",
+		Attributes: map[string]string{
+			"api_key":      "test-key",
+			"base_url":     server.URL,
+			"interactions": "true",
+		},
+	}
+	req := cliproxyexecutor.Request{
+		Model: "gemini-nano-banana-2.1",
+		Payload: []byte(`{
+			"contents":[{"role":"user","parts":[{"text":"draw a tree"}]}],
+			"generationConfig":{"responseModalities":["IMAGE"],"imageConfig":{"aspectRatio":"16:9"}}
+		}`),
+	}
+	resp, err := exec.Execute(context.Background(), auth, req, cliproxyexecutor.Options{
+		SourceFormat:   sdktranslator.FormatGemini,
+		ResponseFormat: sdktranslator.FormatGemini,
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !strings.HasSuffix(gotPath, "/v1beta1/interactions") {
+		t.Fatalf("gotPath = %q, want suffix /v1beta1/interactions", gotPath)
+	}
+	if got := ojson.GetBytesNoCopy(gotBody, "response_format.type").String(); got != "image" {
+		t.Fatalf("response_format.type = %q, want image; body=%s", got, string(gotBody))
+	}
+	if got := ojson.GetBytesNoCopy(resp.Payload, "candidates.0.content.parts.0.inlineData.data").String(); got != "dGVzdA==" {
+		t.Fatalf("inlineData.data = %q, want dGVzdA==", got)
+	}
+}

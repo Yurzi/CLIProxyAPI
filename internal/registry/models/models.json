@@ -1556,6 +1556,47 @@
       }
     },
     {
+      "id": "gemini-nano-banana-2.1",
+      "object": "model",
+      "created": 1776556800,
+      "owned_by": "google",
+      "type": "gemini",
+      "display_name": "Gemini Nano Banana 2.1",
+      "name": "models/gemini-nano-banana-2.1",
+      "version": "2.1",
+      "description": "Gemini Nano Banana 2.1 image generation and editing model",
+      "inputTokenLimit": 1048576,
+      "outputTokenLimit": 65536,
+      "supportedGenerationMethods": [
+        "generateContent",
+        "countTokens",
+        "createCachedContent",
+        "batchGenerateContent"
+      ],
+      "thinking": {
+        "min": 128,
+        "max": 32768,
+        "dynamic_allowed": true,
+        "levels": [
+          "minimal",
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "supportedInputModalities": [
+        "text",
+        "image"
+      ],
+      "supportedOutputModalities": [
+        "text",
+        "image"
+      ],
+      "native_capabilities": {
+        "web_search": true
+      }
+    },
+    {
       "id": "gemini-3-flash-preview",
       "object": "model",
       "created": 1765929600,
@@ -2232,6 +2273,47 @@
         "dynamic_allowed": true,
         "levels": [
           "minimal",
+          "high"
+        ]
+      },
+      "supportedInputModalities": [
+        "text",
+        "image"
+      ],
+      "supportedOutputModalities": [
+        "text",
+        "image"
+      ],
+      "native_capabilities": {
+        "web_search": true
+      }
+    },
+    {
+      "id": "gemini-nano-banana-2.1",
+      "object": "model",
+      "created": 1776556800,
+      "owned_by": "google",
+      "type": "gemini",
+      "display_name": "Gemini Nano Banana 2.1",
+      "name": "models/gemini-nano-banana-2.1",
+      "version": "2.1",
+      "description": "Gemini Nano Banana 2.1 image generation and editing model",
+      "inputTokenLimit": 1048576,
+      "outputTokenLimit": 65536,
+      "supportedGenerationMethods": [
+        "generateContent",
+        "countTokens",
+        "createCachedContent",
+        "batchGenerateContent"
+      ],
+      "thinking": {
+        "min": 128,
+        "max": 32768,
+        "dynamic_allowed": true,
+        "levels": [
+          "minimal",
+          "low",
+          "medium",
           "high"
         ]
       },
@@ -3406,6 +3488,47 @@
         "createCachedContent",
         "batchGenerateContent"
       ],
+      "supportedInputModalities": [
+        "text",
+        "image"
+      ],
+      "supportedOutputModalities": [
+        "text",
+        "image"
+      ],
+      "native_capabilities": {
+        "web_search": true
+      }
+    },
+    {
+      "id": "gemini-nano-banana-2.1",
+      "object": "model",
+      "created": 1776556800,
+      "owned_by": "google",
+      "type": "gemini",
+      "display_name": "Gemini Nano Banana 2.1",
+      "name": "models/gemini-nano-banana-2.1",
+      "version": "2.1",
+      "description": "Gemini Nano Banana 2.1 image generation and editing model",
+      "inputTokenLimit": 1048576,
+      "outputTokenLimit": 65536,
+      "supportedGenerationMethods": [
+        "generateContent",
+        "countTokens",
+        "createCachedContent",
+        "batchGenerateContent"
+      ],
+      "thinking": {
+        "min": 128,
+        "max": 32768,
+        "dynamic_allowed": true,
+        "levels": [
+          "minimal",
+          "low",
+          "medium",
+          "high"
+        ]
+      },
       "supportedInputModalities": [
         "text",
         "image"
